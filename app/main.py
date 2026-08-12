@@ -26,8 +26,11 @@ class EmbassyBot(commands.Bot):
     async def setup_hook(self) -> None:
         await self.database.initialize()
         self.health_runner = await start_health_server(settings.health_host, settings.health_port)
-        await self.load_extension("app.cogs.embassy_requests")
-        logger.info("Embassy request and dashboard services loaded")
+        await self.load_extension("app.cogs.complete")
+        guild = discord.Object(id=settings.discord_guild_id)
+        self.tree.copy_global_to(guild=guild)
+        await self.tree.sync(guild=guild)
+        logger.info("Complete Embassy System loaded and guild commands synchronized")
 
     async def on_ready(self) -> None:
         logger.info("Logged in as %s", self.user)
