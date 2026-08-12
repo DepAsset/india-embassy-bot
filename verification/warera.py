@@ -33,15 +33,11 @@ class WarEraApiError(RuntimeError):
 
 
 class WarEraHttpClient:
-    """Small async adapter for the public WarEra tRPC API.
-
-    The verification flow intentionally keeps API-specific HTTP details here.
-    The company check uses company.getCompanies filtered by userId, so the
-    verification button can perform the ownership check in one interaction.
-    """
+    """Small async adapter for the public WarEra tRPC API."""
 
     def __init__(self, base_url: str, timeout: float = 15.0) -> None:
-        self.base_url = base_url.rstrip("/")
+        base = base_url.rstrip("/")
+        self.base_url = base if base.endswith("/trpc") else f"{base}/trpc"
         self.timeout = aiohttp.ClientTimeout(total=timeout)
         self.session: aiohttp.ClientSession | None = None
 
@@ -62,7 +58,6 @@ class WarEraHttpClient:
 
     async def _get(self, procedure: str, payload: dict) -> dict:
         session = await self._session()
-        # Standard tRPC GET input encoding.
         input_value = quote(json.dumps({"json": payload}, separators=(",", ":")))
         url = f"{self.base_url}/{procedure}?input={input_value}"
         async with session.get(url) as response:
@@ -76,7 +71,6 @@ class WarEraHttpClient:
 
     @staticmethod
     def _unwrap(data: dict) -> dict:
-        # tRPC responses are normally {result: {data: {json: ...}}}.
         value = data
         if isinstance(value.get("result"), dict):
             value = value["result"]
@@ -102,12 +96,7 @@ class WarEraHttpClient:
         )
 
     async def get_company_names(self, user_id: str) -> list[str]:
-        raw = self._unwrap(
-            await self._get(
-                "company.getCompanies",
-                {"userId": user_id, "perPage": 100},
-            )
-        )
+        raw = self._unwrap(await self._get("company.getCompanies", {"userId": user_id, "perPage": 100}))
         companies = raw.get("companies", [])
         if not isinstance(companies, list):
             return []
