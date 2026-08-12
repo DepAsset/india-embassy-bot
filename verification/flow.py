@@ -21,9 +21,30 @@ class VerificationFlow:
         self.audit = AuditLogger(database)
 
     async def resolve_profile(self, request_id: str, supplied: str, actor_id: int) -> WarEraProfile:
+        request = await self.requests.find_one({"request_id": request_id})
+        if not request:
+            raise ValueError("Embassy request not found")
+        if request.get("state") in {RequestState.VERIFIED.value, RequestState.APPROVED.value, RequestState.DECLINED.value, RequestState.CLOSED.value}:
+            raise ValueError("This Embassy request is no longer awaiting verification")
+
         profile = await self.warera.get_profile(supplied)
         now = datetime.now(timezone.utc)
-        await self.requests.update_one({"request_id": request_id, "state": RequestState.SUBMITTED.value}, {"$set": {"state": RequestState.PROFILE_RESOLVED.value, "warera_user_id": profile.user_id, "warera_profile_url": profile.profile_url, "verified_country_id": profile.country_id, "verified_country_name": profile.country_name, "official_flags": {"president": profile.is_president, "vice_president": profile.is_vice_president, "eam_or_mofa": profile.is_eam_or_mofa}, "updated_at": now}})
+        await self.requests.update_one(
+            {"request_id": request_id},
+            {"$set": {
+                "state": RequestState.PROFILE_RESOLVED.value,
+                "warera_user_id": profile.user_id,
+                "warera_profile_url": profile.profile_url,
+                "verified_country_id": profile.country_id,
+                "verified_country_name": profile.country_name,
+                "official_flags": {
+                    "president": profile.is_president,
+                    "vice_president": profile.is_vice_president,
+                    "eam_or_mofa": profile.is_eam_or_mofa,
+                },
+                "updated_at": now,
+            }}
+        )
         await self.audit.log(action="PROFILE_RESOLVED", actor_id=actor_id, request_id=request_id, warera_id=profile.user_id, new_state=RequestState.PROFILE_RESOLVED.value)
         return profile
 
@@ -33,7 +54,11 @@ class VerificationFlow:
             raise ValueError("Resolve the WarEra profile before issuing OTP")
         otp = generate_otp()
         now = datetime.now(timezone.utc)
-        await self.otp.update_one({"request_id": request_id}, {"$set": {"request_id": request_id, "otp_hash": digest_otp(otp), "attempts": 0, "lock_until": None, "issued_at": now, "updated_at": now, "state": "otp_pending"}, "$inc": {"issuance_count": 1}}, upsert=True)
+        await self.otp.update_one(
+            {"request_id": request_id},
+            {"$set": {"request_id": request_id, "otp_hash": digest_otp(otp), "attempts": 0, "lock_until": None, "issued_at": now, "updated_at": now, "state": "otp_pending"}, "$inc": {"issuance_count": 1}},
+            upsert=True,
+        )
         await self.requests.update_one({"request_id": request_id}, {"$set": {"state": RequestState.OTP_PENDING.value, "updated_at": now}})
         await self.audit.log(action="OTP_ISSUED", actor_id=actor_id, request_id=request_id, warera_id=str(request["warera_user_id"]))
         return otp
@@ -61,8 +86,6 @@ class VerificationFlow:
         if lock_until and lock_until > now:
             return False, int(record.get("attempts", 0)), lock_until
         if lock_until and lock_until <= now and int(record.get("attempts", 0)) >= 5:
-            # The ten-minute Retry Verification cooldown has elapsed. Start a
-            # fresh five-attempt window without requiring an applicant button.
             await self.otp.update_one({"request_id": request_id}, {"$set": {"attempts": 0, "lock_until": None, "state": "otp_pending", "updated_at": now}})
             record["attempts"] = 0
 
