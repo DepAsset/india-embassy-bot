@@ -8,7 +8,7 @@ from discord.ext import commands
 
 from app.config import settings
 from app.services.requests import EmbassyRequestService
-from app.cogs.dashboards import Dashboards
+from app.cogs.dashboards import EmbassyManagementView, ForeignDiplomatView
 
 logger = logging.getLogger(__name__)
 
