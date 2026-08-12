@@ -10,6 +10,7 @@ from core.database import Database
 
 # Apply Embassy-flow fixes before any post-verification handlers are loaded.
 import app.embassy_patches  # noqa: F401,E402
+import app.integration_patches  # noqa: F401,E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
 # Render/UptimeRobot health checks are intentionally quiet. The endpoint still
@@ -33,6 +34,8 @@ class EmbassyBot(commands.Bot):
         await self.database.initialize()
         self.health_runner = await start_health_server(settings.health_host, settings.health_port)
 
+        # Load the dependency container first, then the user-facing request
+        # controls, then durable post-verification recovery.
         await self.load_extension("app.cogs.complete")
         await self.load_extension("app.cogs.embassy_requests")
         await self.load_extension("app.cogs.post_verification")
