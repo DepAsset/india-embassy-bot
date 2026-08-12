@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: india-embassy-bot
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    autoDeploy: true
+    healthCheckPath: /health
+    envVars:
+      - key: DISCORD_TOKEN
+        sync: false
+      - key: MONGODB_URI
+        sync: false
+      - key: MONGODB_DATABASE
+        sync: false
+      - key: WARERA_API_BASE
+        sync: false
+      - key: WARERA_API_TOKEN
+        sync: false
