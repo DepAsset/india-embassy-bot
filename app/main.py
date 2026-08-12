@@ -13,6 +13,7 @@ from migration.embassy_seed import seed_legacy_embassies
 import app.embassy_patches  # noqa: F401,E402
 import app.integration_patches  # noqa: F401,E402
 import app.embassy_user_fixes  # noqa: F401,E402
+import app.safety_patches  # noqa: F401,E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
 # Render/UptimeRobot health checks are intentionally quiet. The endpoint still
@@ -61,6 +62,7 @@ class EmbassyBot(commands.Bot):
         if guild is None:
             logger.error("Configured guild %s is not available", settings.discord_guild_id)
             return
+
         logger.info("Connected to guild: %s (%s)", guild.name, guild.id)
 
         if not self.legacy_embassy_migration_done:
