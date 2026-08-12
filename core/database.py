@@ -38,8 +38,8 @@ class Database:
         await self.collection("preapprovals").create_index([("embassy_id", 1), ("applicant_warera_id", 1), ("active", 1)])
         await self.collection("preapprovals").create_index("expires_at")
         await self.collection("verification_attempts").create_index("request_id", unique=True)
-        await self.collection("audit_logs").create_index([("timestamp", -1)])
-        await self.collection("audit_logs").create_index([("request_id", 1), ("timestamp", -1)])
+        await self.collection("audit_logs").create_index([("created_at", -1)])
+        await self.collection("audit_logs").create_index([("request_id", 1), ("created_at", -1)])
         await self.collection("migration_snapshots").create_index("snapshot_id", unique=True)
 
     async def close(self) -> None:
