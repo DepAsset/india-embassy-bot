@@ -23,22 +23,7 @@ class VerificationFlow:
     async def resolve_profile(self, request_id: str, supplied: str, actor_id: int) -> WarEraProfile:
         profile = await self.warera.get_profile(supplied)
         now = datetime.now(timezone.utc)
-        await self.requests.update_one(
-            {"request_id": request_id, "state": RequestState.SUBMITTED.value},
-            {"$set": {
-                "state": RequestState.PROFILE_RESOLVED.value,
-                "warera_user_id": profile.user_id,
-                "warera_profile_url": profile.profile_url,
-                "verified_country_id": profile.country_id,
-                "verified_country_name": profile.country_name,
-                "official_flags": {
-                    "president": profile.is_president,
-                    "vice_president": profile.is_vice_president,
-                    "eam_or_mofa": profile.is_eam_or_mofa,
-                },
-                "updated_at": now,
-            }},
-        )
+        await self.requests.update_one({"request_id": request_id, "state": RequestState.SUBMITTED.value}, {"$set": {"state": RequestState.PROFILE_RESOLVED.value, "warera_user_id": profile.user_id, "warera_profile_url": profile.profile_url, "verified_country_id": profile.country_id, "verified_country_name": profile.country_name, "official_flags": {"president": profile.is_president, "vice_president": profile.is_vice_president, "eam_or_mofa": profile.is_eam_or_mofa}, "updated_at": now}})
         await self.audit.log(action="PROFILE_RESOLVED", actor_id=actor_id, request_id=request_id, warera_id=profile.user_id, new_state=RequestState.PROFILE_RESOLVED.value)
         return profile
 
@@ -48,22 +33,23 @@ class VerificationFlow:
             raise ValueError("Resolve the WarEra profile before issuing OTP")
         otp = generate_otp()
         now = datetime.now(timezone.utc)
-        await self.otp.update_one(
-            {"request_id": request_id},
-            {"$set": {
-                "request_id": request_id,
-                "otp_hash": digest_otp(otp),
-                "attempts": 0,
-                "lock_until": None,
-                "issued_at": now,
-                "updated_at": now,
-                "state": "otp_pending",
-            }},
-            upsert=True,
-        )
+        await self.otp.update_one({"request_id": request_id}, {"$set": {"request_id": request_id, "otp_hash": digest_otp(otp), "attempts": 0, "lock_until": None, "issued_at": now, "updated_at": now, "state": "otp_pending"}, "$inc": {"issuance_count": 1}}, upsert=True)
         await self.requests.update_one({"request_id": request_id}, {"$set": {"state": RequestState.OTP_PENDING.value, "updated_at": now}})
         await self.audit.log(action="OTP_ISSUED", actor_id=actor_id, request_id=request_id, warera_id=str(request["warera_user_id"]))
         return otp
+
+    async def _failure(self, request: dict, record: dict, request_id: str, actor_id: int, now: datetime, action: str) -> tuple[bool, int, datetime | None]:
+        attempts, locked, new_lock = register_failure(int(record.get("attempts", 0)))
+        lockouts = int(record.get("lockouts", 0)) + (1 if locked else 0)
+        recovery = locked and lockouts >= 2
+        state = "recovery_pending" if recovery else ("locked" if locked else "otp_pending")
+        await self.otp.update_one({"request_id": request_id}, {"$set": {"attempts": attempts, "lock_until": new_lock, "lockouts": lockouts, "state": state, "updated_at": now}})
+        if recovery:
+            await self.requests.update_one({"request_id": request_id}, {"$set": {"state": RequestState.RECOVERY_PENDING.value, "active": True, "updated_at": now}})
+        elif locked:
+            await self.requests.update_one({"request_id": request_id}, {"$set": {"state": RequestState.OTP_LOCKED.value, "updated_at": now}})
+        await self.audit.log(action=action, actor_id=actor_id, request_id=request_id, warera_id=str(request.get("warera_user_id") or ""), metadata={"attempts": attempts, "lockouts": lockouts, "manual_review": recovery})
+        return False, attempts, new_lock
 
     async def verify_company_otp(self, request_id: str, candidate: str, actor_id: int) -> tuple[bool, int, datetime | None]:
         request = await self.requests.find_one({"request_id": request_id})
@@ -74,25 +60,20 @@ class VerificationFlow:
         lock_until = record.get("lock_until")
         if lock_until and lock_until > now:
             return False, int(record.get("attempts", 0)), lock_until
+        if lock_until and lock_until <= now and int(record.get("attempts", 0)) >= 5:
+            # The ten-minute Retry Verification cooldown has elapsed. Start a
+            # fresh five-attempt window without requiring an applicant button.
+            await self.otp.update_one({"request_id": request_id}, {"$set": {"attempts": 0, "lock_until": None, "state": "otp_pending", "updated_at": now}})
+            record["attempts"] = 0
 
         supplied = re.sub(r"\s+", "", candidate.strip().upper())
         if digest_otp(supplied) != record.get("otp_hash"):
-            attempts, locked, new_lock = register_failure(int(record.get("attempts", 0)))
-            await self.otp.update_one({"request_id": request_id}, {"$set": {"attempts": attempts, "lock_until": new_lock, "state": "locked" if locked else "otp_pending", "updated_at": now}})
-            if locked:
-                await self.requests.update_one({"request_id": request_id}, {"$set": {"state": RequestState.OTP_LOCKED.value, "updated_at": now}})
-            await self.audit.log(action="OTP_FAILED", actor_id=actor_id, request_id=request_id, warera_id=str(request["warera_user_id"]), metadata={"attempts": attempts, "locked": locked})
-            return False, attempts, new_lock
+            return await self._failure(request, record, request_id, actor_id, now, "OTP_FAILED")
 
         company_names = await self.warera.get_company_names(str(request["warera_user_id"]))
         normalized_companies = {re.sub(r"\s+", "", name.strip().upper()) for name in company_names}
         if supplied not in normalized_companies:
-            attempts, locked, new_lock = register_failure(int(record.get("attempts", 0)))
-            await self.otp.update_one({"request_id": request_id}, {"$set": {"attempts": attempts, "lock_until": new_lock, "state": "locked" if locked else "otp_pending", "updated_at": now}})
-            if locked:
-                await self.requests.update_one({"request_id": request_id}, {"$set": {"state": RequestState.OTP_LOCKED.value, "updated_at": now}})
-            await self.audit.log(action="OTP_COMPANY_CHECK_FAILED", actor_id=actor_id, request_id=request_id, warera_id=str(request["warera_user_id"]), metadata={"attempts": attempts, "locked": locked})
-            return False, attempts, new_lock
+            return await self._failure(request, record, request_id, actor_id, now, "OTP_COMPANY_CHECK_FAILED")
 
         await self.otp.update_one({"request_id": request_id}, {"$set": {"state": "verified", "verified_at": now, "updated_at": now}})
         await self.requests.update_one({"request_id": request_id}, {"$set": {"state": RequestState.VERIFIED.value, "updated_at": now, "verification_completed_at": now}})
