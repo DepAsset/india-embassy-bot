@@ -1,1 +1,0 @@
-"""India Embassy Bot package."""
