@@ -131,7 +131,7 @@ class WarEraHTTPClient(WarEraClient):
 
         return WarEraProfile(
             user_id=canonical_id,
-            profile_url=f"https://warera.io/profile/{canonical_id}",
+            profile_url=f"https://app.warera.io/user/{canonical_id}",
             username=str(data.get("username") or data.get("name") or canonical_id),
             country_id=country_id,
             country_name=country_name,
