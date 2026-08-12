@@ -11,6 +11,7 @@ from core.database import Database
 # Apply Embassy-flow fixes before any post-verification handlers are loaded.
 import app.embassy_patches  # noqa: F401,E402
 import app.integration_patches  # noqa: F401,E402
+import app.embassy_user_fixes  # noqa: F401,E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
 # Render/UptimeRobot health checks are intentionally quiet. The endpoint still
