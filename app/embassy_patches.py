@@ -8,7 +8,8 @@ import discord
 from app.config import settings
 from app.cogs.embassy_flow import EmbassyFlow
 from approval.workflow import Route
-from access.models import AccessSource
+from access.models import AccessSource, AssignmentType
+from access.discord import DiscordAccessProvisioner
 
 WELCOME_MESSAGES = (
     "🎉 **Welcome to the Embassy family!** Your diplomatic passport has officially found its home. We are glad to have you with us!",
@@ -35,6 +36,27 @@ def _role_mentions(guild: discord.Guild) -> str:
         if role:
             mentions.append(role.mention)
     return " ".join(dict.fromkeys(mentions))
+
+
+def _welcome_embed(member: discord.Member, embassy, *, new_embassy: bool = False) -> discord.Embed:
+    embed = discord.Embed(
+        title="🎉 Welcome to the Embassy!",
+        description=(
+            f"{random.choice(WELCOME_MESSAGES)}\n\n"
+            f"**New Diplomat:** {member.mention}\n"
+            f"**Embassy:** {embassy.country_name}\n\n"
+            "Make yourself comfortable. This is now your diplomatic home! 🏛️"
+        ),
+        color=discord.Color.green(),
+    )
+    if new_embassy:
+        embed.add_field(
+            name="🌱 A New Embassy Begins",
+            value="This Embassy has just opened its doors, and you are its first active diplomat. That is a pretty cool first page in its history!",
+            inline=False,
+        )
+    embed.set_footer(text="Embassy Access System • Welcome aboard")
+    return embed
 
 
 async def _patched_notify_government(self, guild, request, embassy, *, revival: bool):
@@ -131,6 +153,23 @@ async def _patched_log_channel(self, content: str):
     await channel.send(content, allowed_mentions=discord.AllowedMentions(users=True, roles=True))
 
 
+async def _patched_grant_access(self, guild, user_id: int, embassy, source: AccessSource):
+    member = guild.get_member(user_id)
+    channel = guild.get_channel(embassy.channel_id)
+    if not isinstance(member, discord.Member) or not isinstance(channel, discord.TextChannel):
+        raise ValueError("Applicant or Embassy channel is unavailable")
+    await self.access.assign(user_id, embassy.embassy_id, AssignmentType.FOREIGN_DIPLOMAT, source)
+    provisioner = DiscordAccessProvisioner(foreign_diplomat_role_id=settings.role_foreign_diplomat_id)
+    await provisioner.grant_embassy_access(member, channel, reason=f"Embassy access granted for {embassy.country_name}")
+    role = guild.get_role(settings.role_foreign_diplomat_id)
+    if role:
+        await provisioner.ensure_role(member, role, reason="User received Embassy access")
+    await channel.send(
+        embed=_welcome_embed(member, embassy, new_embassy=source is AccessSource.SPECIAL_OFFICIAL),
+        allowed_mentions=discord.AllowedMentions(users=True),
+    )
+
+
 async def _patched_handle_own_country(self, interaction, request):
     country_id = str(request.get("verified_country_id") or "").strip()
     country_name = str(request.get("verified_country_name") or "").strip()
@@ -147,39 +186,14 @@ async def _patched_handle_own_country(self, interaction, request):
             embassy,
             "Embassy did not previously exist. The applicant became the first active diplomat.",
         )
-        await self._announce_new_diplomat(interaction.guild, interaction.user, embassy, new_embassy=True)
         return
 
     return await _ORIGINAL_HANDLE_OWN_COUNTRY(self, interaction, request)
-
-
-async def _patched_announce_new_diplomat(self, guild, member, embassy, new_embassy: bool = False):
-    channel = guild.get_channel(embassy.channel_id)
-    if not isinstance(channel, discord.TextChannel):
-        return
-    embed = discord.Embed(
-        title="🎉 Welcome to the Embassy!",
-        description=(
-            f"{random.choice(WELCOME_MESSAGES)}\n\n"
-            f"**New Diplomat:** {member.mention}\n"
-            f"**Embassy:** {embassy.country_name}\n\n"
-            "Make yourself comfortable. This is now your diplomatic home! 🏛️"
-        ),
-        color=discord.Color.green(),
-    )
-    if new_embassy:
-        embed.add_field(
-            name="🌱 A New Embassy Begins",
-            value="This Embassy has just opened its doors, and you are its first active diplomat. That is a pretty cool first page in its history!",
-            inline=False,
-        )
-    embed.set_footer(text="Embassy Access System • Welcome aboard")
-    await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions(users=True))
 
 
 _ORIGINAL_HANDLE_OWN_COUNTRY = EmbassyFlow._handle_own_country
 EmbassyFlow._notify_government = _patched_notify_government
 EmbassyFlow._finalize_direct = _patched_finalize_direct
 EmbassyFlow._log_channel = _patched_log_channel
+EmbassyFlow._grant_access = _patched_grant_access
 EmbassyFlow._handle_own_country = _patched_handle_own_country
-EmbassyFlow._announce_new_diplomat = _patched_announce_new_diplomat
