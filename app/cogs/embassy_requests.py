@@ -69,9 +69,7 @@ class RequestPanelView(discord.ui.View):
         await interaction.response.send_modal(WarEraProfileModal(self.service))
 
 
-class OTPSubmitModal(discord.ui.Modal, title="Embassy OTP Verification"):
-    otp = discord.ui.TextInput(label="Company OTP", placeholder="Enter the exact OTP company name", min_length=1, max_length=100, required=True)
-
+class OTPSubmitModal(discord.ui.Modal, title="Embassy Company Verification"):
     def __init__(self, service: EmbassyRequestService, request_id: str) -> None:
         super().__init__(timeout=300)
         self.service = service
@@ -91,9 +89,9 @@ class OTPSubmitModal(discord.ui.Modal, title="Embassy OTP Verification"):
             await interaction.followup.send("The verification service is temporarily unavailable. Please try again later.", ephemeral=True)
             return
         try:
-            verified, attempts, lock_until = await complete_cog.verification.verify_company_otp(self.request_id, self.otp.value, interaction.user.id)
+            verified, attempts, lock_until = await complete_cog.verification.verify_company_otp(self.request_id, interaction.user.id)
         except WarEraAPIError:
-            logger.exception("WarEra API error during OTP verification for %s", self.request_id)
+            logger.exception("WarEra API error during company verification for %s", self.request_id)
             await interaction.followup.send("WarEra could not be checked right now. Please try again later.", ephemeral=True)
             return
         except ValueError as exc:
@@ -101,13 +99,13 @@ class OTPSubmitModal(discord.ui.Modal, title="Embassy OTP Verification"):
             return
         if verified:
             await self.service.database.collection("requests").update_one({"request_id": self.request_id}, {"$set": {"status": "VERIFIED", "active": True}})
-            await interaction.followup.send("✅ OTP verified successfully. Your WarEra identity and company ownership have been verified.", ephemeral=True)
+            await interaction.followup.send("✅ Company verified successfully. Your WarEra identity and company ownership have been verified.", ephemeral=True)
             await interaction.channel.send(embed=discord.Embed(title="✅ WarEra Verification Complete", description="Your WarEra identity and company ownership have been verified.\n\nYour request can now proceed to embassy access review.", color=discord.Color.green()))
             return
         if lock_until and attempts >= 5:
             message = "🔒 Verification is temporarily locked after 5 failed attempts. Please use Retry Verification after the cooldown."
         else:
-            message = f"❌ Verification failed. Attempt {attempts}/5."
+            message = f"❌ Company verification failed. Attempt {attempts}/5."
         await interaction.followup.send(message, ephemeral=True)
 
 
@@ -117,11 +115,11 @@ class OTPSubmitView(discord.ui.View):
         self.service = service
         self.request_id = request_id
 
-    @discord.ui.button(label="Submit OTP", style=discord.ButtonStyle.primary, emoji="🔑", custom_id="embassy:submit-otp")
+    @discord.ui.button(label="Verify Company", style=discord.ButtonStyle.primary, emoji="🔍", custom_id="embassy:verify-company")
     async def submit_otp(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         request = await self.service.database.collection("requests").find_one({"request_id": self.request_id})
         if not request or request.get("discord_user_id") != interaction.user.id:
-            await interaction.response.send_message("Only the applicant can submit this OTP.", ephemeral=True)
+            await interaction.response.send_message("Only the applicant can verify this company.", ephemeral=True)
             return
         await interaction.response.send_modal(OTPSubmitModal(self.service, self.request_id))
 
@@ -183,7 +181,7 @@ class VerificationStartView(discord.ui.View):
                 "Your WarEra identity has been resolved. Now create or rename one of your **owned companies** so its exact name matches the OTP below.\n\n"
                 f"**Player:** {profile.username}\n**Country:** {profile.country_name}\n**Official status:** {official_text}\n\n"
                 f"**Your OTP:** `{otp}`\n\n"
-                "Once the company name matches the OTP, click **Submit OTP**. The bot will discover your company IDs with `company.getCompanies` and resolve every company through `company.getById` before accepting the match."
+                "Once the company name matches the OTP, click **Verify Company**. The bot will discover your company IDs with `company.getCompanies` and resolve every company through `company.getById` before accepting the match."
             ),
             color=discord.Color.blurple(),
         )
