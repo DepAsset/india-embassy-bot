@@ -29,41 +29,30 @@ class WarEraProfileModal(discord.ui.Modal, title="Embassy Verification"):
     async def on_submit(self, interaction: discord.Interaction) -> None:
         if not interaction.guild or not isinstance(interaction.user, discord.Member):
             await interaction.response.send_message(
-                "This application can only be started inside the India server.",
-                ephemeral=True,
+                "This application can only be started inside the India server.", ephemeral=True
             )
             return
-
         parent = interaction.guild.get_channel(settings.channel_request_parent_id)
         if not isinstance(parent, discord.TextChannel):
             await interaction.response.send_message(
-                "The Embassy request channel is not configured as a text channel. Please contact an administrator.",
-                ephemeral=True,
+                "The Embassy request channel is not configured as a text channel. Please contact an administrator.", ephemeral=True
             )
             return
-
         try:
             request_id, thread, created = await self.service.create_private_request(
-                channel=parent,
-                applicant=interaction.user,
+                channel=parent, applicant=interaction.user
             )
             if not created:
                 await interaction.response.send_message(
-                    f"You already have an active Embassy request: {thread.mention}",
-                    ephemeral=True,
+                    f"You already have an active Embassy request: {thread.mention}", ephemeral=True
                 )
                 return
-
             await self.service.database.collection("requests").update_one(
-                {"request_id": request_id},
-                {"$set": {"profile_input": self.profile.value.strip()}},
+                {"request_id": request_id}, {"$set": {"profile_input": self.profile.value.strip()}}
             )
-
             await interaction.response.send_message(
-                f"Your private Embassy request has been created: {thread.mention}",
-                ephemeral=True,
+                f"Your private Embassy request has been created: {thread.mention}", ephemeral=True
             )
-
             await thread.send(
                 embed=discord.Embed(
                     title="🇮🇳 Embassy Access Request",
@@ -80,14 +69,12 @@ class WarEraProfileModal(discord.ui.Modal, title="Embassy Verification"):
             )
         except discord.Forbidden:
             await interaction.response.send_message(
-                "I cannot create the private request thread. Please contact an administrator.",
-                ephemeral=True,
+                "I cannot create the private request thread. Please contact an administrator.", ephemeral=True
             )
         except discord.HTTPException:
             logger.exception("Discord API failure while creating embassy request")
             await interaction.response.send_message(
-                "Discord returned an error while creating your request. Please try again later.",
-                ephemeral=True,
+                "Discord returned an error while creating your request. Please try again later.", ephemeral=True
             )
 
 
@@ -97,41 +84,41 @@ class RequestPanelView(discord.ui.View):
         self.service = service
 
     @discord.ui.button(
-        label="Request Embassy Access",
-        style=discord.ButtonStyle.primary,
-        emoji="🏛️",
-        custom_id="embassy:request-access",
+        label="Request Embassy Access", style=discord.ButtonStyle.primary,
+        emoji="🏛️", custom_id="embassy:request-access"
     )
     async def request_access(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         await interaction.response.send_modal(WarEraProfileModal(self.service))
 
 
 class VerificationStartView(discord.ui.View):
-    """Persistent bridge to the WarEra profile/OTP implementation slice."""
-
     def __init__(self, service: EmbassyRequestService) -> None:
         super().__init__(timeout=None)
         self.service = service
 
     @discord.ui.button(
-        label="Continue Verification",
-        style=discord.ButtonStyle.success,
-        emoji="🔐",
-        custom_id="embassy:continue-verification",
+        label="Continue Verification", style=discord.ButtonStyle.success,
+        emoji="🔐", custom_id="embassy:continue-verification"
     )
     async def continue_verification(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         if not isinstance(interaction.channel, discord.Thread):
-            await interaction.response.send_message("This verification control must be used inside your request thread.", ephemeral=True)
+            await interaction.response.send_message(
+                "This verification control must be used inside your request thread.", ephemeral=True
+            )
             return
-
-        request = await self.service.database.collection("requests").find_one({"thread_id": interaction.channel.id})
+        request = await self.service.database.collection("requests").find_one(
+            {"thread_id": interaction.channel.id}
+        )
         if not request:
-            await interaction.response.send_message("This request could not be found. Please contact an administrator.", ephemeral=True)
+            await interaction.response.send_message(
+                "This request could not be found. Please contact an administrator.", ephemeral=True
+            )
             return
         if request.get("discord_user_id") != interaction.user.id:
-            await interaction.response.send_message("Only the applicant can continue this verification.", ephemeral=True)
+            await interaction.response.send_message(
+                "Only the applicant can continue this verification.", ephemeral=True
+            )
             return
-
         await interaction.response.send_message(
             "Your profile is captured. WarEra profile resolution and OTP verification are the next implementation stage.",
             ephemeral=True,
@@ -157,15 +144,12 @@ class EmbassyRequestsCog(commands.Cog):
         if not interaction.user.guild_permissions.manage_guild:
             await interaction.response.send_message("You need Manage Server to run this setup command.", ephemeral=True)
             return
-
         channel = interaction.guild.get_channel(settings.channel_request_parent_id)
         if not isinstance(channel, discord.TextChannel):
             await interaction.response.send_message(
-                "CHANNEL_REQUEST_PARENT_ID must point to a normal text channel.",
-                ephemeral=True,
+                "CHANNEL_REQUEST_PARENT_ID must point to a normal text channel.", ephemeral=True
             )
             return
-
         await channel.send(
             embed=discord.Embed(
                 title="🇮🇳 Embassy Access System",
@@ -179,6 +163,55 @@ class EmbassyRequestsCog(commands.Cog):
             view=RequestPanelView(self.service),
         )
         await interaction.response.send_message("Embassy request panel installed.", ephemeral=True)
+
+    @app_commands.command(name="embassy-dashboard", description="Open the Embassy Management Dashboard.")
+    async def embassy_dashboard(self, interaction: discord.Interaction) -> None:
+        member = interaction.user
+        if not isinstance(member, discord.Member):
+            await interaction.response.send_message("Guild-only command.", ephemeral=True)
+            return
+        allowed_roles = {
+            settings.role_president_id,
+            settings.role_vice_president_id,
+            settings.role_nsa_id,
+            settings.role_minister_id,
+        }
+        if not member.guild_permissions.administrator and not any(r.id in allowed_roles for r in member.roles):
+            await interaction.response.send_message("You are not authorized to use this dashboard.", ephemeral=True)
+            return
+        embed = discord.Embed(
+            title="🏛️ Embassy Management",
+            description=(
+                "Central management for requests, Ambassadors, Foreign Diplomats, embassies, "
+                "access, migration and maintenance."
+            ),
+            color=discord.Color.dark_red(),
+        )
+        await interaction.response.send_message(
+            embed=embed, view=EmbassyManagementView(self.bot, timeout=None)
+        )
+
+    @app_commands.command(name="foreign-diplomat-dashboard", description="Open the Foreign Diplomat Dashboard.")
+    async def foreign_diplomat_dashboard(self, interaction: discord.Interaction) -> None:
+        member = interaction.user
+        if not isinstance(member, discord.Member) or not any(
+            r.id == settings.role_foreign_diplomat_id for r in member.roles
+        ):
+            await interaction.response.send_message(
+                "You need the Foreign Diplomat role to use this dashboard.", ephemeral=True
+            )
+            return
+        embed = discord.Embed(
+            title="🌍 Foreign Diplomat Portal",
+            description=(
+                "Manage only your assigned embassies, create pre-approvals for those embassies, "
+                "and review your activity."
+            ),
+            color=discord.Color.blurple(),
+        )
+        await interaction.response.send_message(
+            embed=embed, view=ForeignDiplomatView(self.bot, timeout=None), ephemeral=True
+        )
 
 
 async def setup(bot: commands.Bot) -> None:
