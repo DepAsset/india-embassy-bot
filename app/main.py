@@ -9,15 +9,14 @@ from .health import start_health_server
 from core.database import Database
 from migration.embassy_seed import seed_legacy_embassies
 
-# Apply Embassy-flow fixes before any post-verification handlers are loaded.
+# Apply Embassy-flow fixes before any user-facing extensions are loaded.
 import app.embassy_patches  # noqa: F401,E402
 import app.integration_patches  # noqa: F401,E402
 import app.embassy_user_fixes  # noqa: F401,E402
 import app.safety_patches  # noqa: F401,E402
+from app.integration_completion import restore_surprise_views  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
-# Render/UptimeRobot health checks are intentionally quiet. The endpoint still
-# responds normally; only the repetitive aiohttp access log is suppressed.
 logging.getLogger("aiohttp.access").setLevel(logging.WARNING)
 logger = logging.getLogger("india-embassy-bot")
 
@@ -38,14 +37,12 @@ class EmbassyBot(commands.Bot):
         await self.database.initialize()
         self.health_runner = await start_health_server(settings.health_host, settings.health_port)
 
-        # Register the persistent welcome-message surprise button before the
-        # user-facing extensions are loaded so existing Embassy messages keep
-        # working after a bot restart.
-        from app.embassy_patches import CuratedSurpriseView
-        self.add_view(CuratedSurpriseView())
+        # Restore the one-use welcome surprise buttons that belong to existing
+        # accepted diplomats. Used surprises are registered as disabled views.
+        await restore_surprise_views(self)
 
         # Load the dependency container first, then the user-facing request
-        # controls, then durable post-verification recovery.
+        # controls, then durable post-verification and recovery handlers.
         await self.load_extension("app.cogs.complete")
         await self.load_extension("app.cogs.embassy_requests")
         await self.load_extension("app.cogs.post_verification")
