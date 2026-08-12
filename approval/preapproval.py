@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
+from bson import ObjectId
+
 from core.database import Database
 
 
@@ -18,7 +20,7 @@ class PreApprovalService:
         expires_at: datetime | None,
         reason: str | None = None,
     ) -> str:
-        document: dict[str, Any] = {
+        result = await self.collection.insert_one({
             "embassy_id": embassy_id,
             "diplomat_id": diplomat_id,
             "applicant_warera_id": applicant_warera_id,
@@ -26,8 +28,7 @@ class PreApprovalService:
             "reason": reason,
             "created_at": datetime.now(timezone.utc),
             "active": True,
-        }
-        result = await self.collection.insert_one(document)
+        })
         return str(result.inserted_id)
 
     async def find_valid(self, embassy_id: str, applicant_warera_id: str) -> dict[str, Any] | None:
@@ -36,15 +37,16 @@ class PreApprovalService:
             "embassy_id": embassy_id,
             "applicant_warera_id": applicant_warera_id,
             "active": True,
-            "$or": [
-                {"expires_at": None},
-                {"expires_at": {"$gt": now}},
-            ],
+            "$or": [{"expires_at": None}, {"expires_at": {"$gt": now}}],
         })
 
     async def revoke(self, preapproval_id: str, revoked_by: int, reason: str) -> bool:
+        try:
+            oid = ObjectId(preapproval_id)
+        except Exception:
+            return False
         result = await self.collection.update_one(
-            {"_id": preapproval_id, "active": True},
+            {"_id": oid, "active": True},
             {"$set": {
                 "active": False,
                 "revoked_by": revoked_by,
