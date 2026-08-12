@@ -76,7 +76,7 @@ class VerificationFlow:
         await self.audit.log(action=action, actor_id=actor_id, request_id=request_id, warera_id=str(request.get("warera_user_id") or ""), metadata={"attempts": attempts, "lockouts": lockouts, "manual_review": recovery})
         return False, attempts, new_lock
 
-    async def verify_company_otp(self, request_id: str, candidate: str, actor_id: int) -> tuple[bool, int, datetime | None]:
+    async def _prepare_verification(self, request_id: str) -> tuple[dict, dict, datetime]:
         request = await self.requests.find_one({"request_id": request_id})
         record = await self.otp.find_one({"request_id": request_id})
         if not request or not record:
@@ -84,21 +84,37 @@ class VerificationFlow:
         now = datetime.now(timezone.utc)
         lock_until = record.get("lock_until")
         if lock_until and lock_until > now:
-            return False, int(record.get("attempts", 0)), lock_until
+            raise ValueError(f"Verification is locked until {lock_until.isoformat()}")
         if lock_until and lock_until <= now and int(record.get("attempts", 0)) >= 5:
             await self.otp.update_one({"request_id": request_id}, {"$set": {"attempts": 0, "lock_until": None, "state": "otp_pending", "updated_at": now}})
             record["attempts"] = 0
+        return request, record, now
 
-        supplied = re.sub(r"\s+", "", candidate.strip().upper())
-        if digest_otp(supplied) != record.get("otp_hash"):
-            return await self._failure(request, record, request_id, actor_id, now, "OTP_FAILED")
-
+    async def _complete_company_verification(self, request: dict, record: dict, request_id: str, actor_id: int, now: datetime) -> tuple[bool, int, datetime | None]:
         company_names = await self.warera.get_company_names(str(request["warera_user_id"]))
-        normalized_companies = {re.sub(r"\s+", "", name.strip().upper()) for name in company_names}
-        if supplied not in normalized_companies:
+        otp_hash = record.get("otp_hash")
+        matched = any(digest_otp(re.sub(r"\s+", "", name.strip().upper())) == otp_hash for name in company_names)
+        if not matched:
             return await self._failure(request, record, request_id, actor_id, now, "OTP_COMPANY_CHECK_FAILED")
 
         await self.otp.update_one({"request_id": request_id}, {"$set": {"state": "verified", "verified_at": now, "updated_at": now}})
-        await self.requests.update_one({"request_id": request_id}, {"$set": {"state": RequestState.VERIFIED.value, "updated_at": now, "verification_completed_at": now}})
+        await self.requests.update_one({"request_id": request_id}, {"$set": {"state": RequestState.VERIFIED.value, "updated_at": now, "verification_completed_at": now, "active": True}})
         await self.audit.log(action="OTP_VERIFIED", actor_id=actor_id, request_id=request_id, warera_id=str(request["warera_user_id"]), new_state=RequestState.VERIFIED.value)
         return True, int(record.get("attempts", 0)), None
+
+    async def verify_company_otp(self, request_id: str, candidate: str, actor_id: int) -> tuple[bool, int, datetime | None]:
+        request, record, now = await self._prepare_verification(request_id)
+        supplied = re.sub(r"\s+", "", candidate.strip().upper())
+        if digest_otp(supplied) != record.get("otp_hash"):
+            return await self._failure(request, record, request_id, actor_id, now, "OTP_FAILED")
+        return await self._complete_company_verification(request, record, request_id, actor_id, now)
+
+    async def verify_company_ownership(self, request_id: str, actor_id: int) -> tuple[bool, int, datetime | None]:
+        """Verify the stored OTP directly against the applicant's owned companies.
+
+        The applicant never submits the OTP back to Discord. The bot retrieves
+        the stored OTP hash and compares it against the names of the applicant's
+        currently owned companies returned by the WarEra API.
+        """
+        request, record, now = await self._prepare_verification(request_id)
+        return await self._complete_company_verification(request, record, request_id, actor_id, now)
