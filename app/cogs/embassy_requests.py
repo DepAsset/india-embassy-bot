@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 
 import discord
 from discord import app_commands
@@ -86,7 +87,7 @@ class RequestPanelView(discord.ui.View):
 
 
 class CompanyVerificationView(discord.ui.View):
-    """One-click company ownership verification using the stored OTP hash."""
+    """Mobile-friendly company verification controls using the stored OTP hash."""
 
     WAITING_MESSAGES = (
         "🔎 **Checking your WarEra companies...**\n\nThe Embassy desk is looking for the company you just renamed.",
@@ -99,6 +100,83 @@ class CompanyVerificationView(discord.ui.View):
     def __init__(self, service: EmbassyRequestService) -> None:
         super().__init__(timeout=None)
         self.service = service
+
+        open_companies = discord.ui.Button(
+            label="Open Your Companies",
+            emoji="🌐",
+            style=discord.ButtonStyle.secondary,
+            custom_id="embassy:open-companies",
+            row=0,
+        )
+        open_companies.callback = self.open_companies
+        self.add_item(open_companies)
+
+        copy_otp = discord.ui.Button(
+            label="Copy OTP",
+            emoji="📋",
+            style=discord.ButtonStyle.secondary,
+            custom_id="embassy:copy-otp",
+            row=0,
+        )
+        copy_otp.callback = self.copy_otp
+        self.add_item(copy_otp)
+
+        verify = discord.ui.Button(
+            label="Verify Company",
+            emoji="🔍",
+            style=discord.ButtonStyle.success,
+            custom_id="embassy:verify-company",
+            row=1,
+        )
+        verify.callback = self.verify_company
+        self.add_item(verify)
+
+    async def open_companies(self, interaction: discord.Interaction) -> None:
+        if not isinstance(interaction.channel, discord.Thread):
+            await interaction.response.send_message("This button can only be used inside your Embassy request thread.", ephemeral=True)
+            return
+        request = await self.service.database.collection("requests").find_one({"thread_id": interaction.channel.id})
+        if not request or request.get("discord_user_id") != interaction.user.id:
+            await interaction.response.send_message("Only the applicant can open their WarEra companies.", ephemeral=True)
+            return
+        raw_profile = str(request.get("warera_profile_raw_url") or "").rstrip("/")
+        if not raw_profile:
+            user_id = str(request.get("warera_user_id") or "").strip()
+            if not user_id:
+                await interaction.response.send_message("The WarEra profile has not been resolved yet.", ephemeral=True)
+                return
+            raw_profile = f"https://app.warera.io/user/{user_id}"
+        companies_url = f"{raw_profile}/companies"
+        await interaction.response.send_message(
+            f"🌐 **Open your WarEra companies:** {companies_url}",
+            ephemeral=True,
+        )
+
+    @staticmethod
+    def _otp_from_message(message: discord.Message) -> str | None:
+        for embed in message.embeds:
+            description = embed.description or ""
+            match = re.search(r"```(?:[A-Za-z0-9_-]+)?\\s*([A-Z0-9]{4,32})\\s*```", description)
+            if match:
+                return match.group(1).strip()
+        return None
+
+    async def copy_otp(self, interaction: discord.Interaction) -> None:
+        if not isinstance(interaction.channel, discord.Thread):
+            await interaction.response.send_message("This button can only be used inside your Embassy request thread.", ephemeral=True)
+            return
+        request = await self.service.database.collection("requests").find_one({"thread_id": interaction.channel.id})
+        if not request or request.get("discord_user_id") != interaction.user.id:
+            await interaction.response.send_message("Only the applicant can access this OTP.", ephemeral=True)
+            return
+        otp = self._otp_from_message(interaction.message) if interaction.message else None
+        if not otp:
+            await interaction.response.send_message("I could not recover the OTP from this verification message. Please use the OTP shown above.", ephemeral=True)
+            return
+        await interaction.response.send_message(
+            f"📋 **Your OTP**\n```{otp}```\n\nUse Discord's copy control on the code block to copy it.",
+            ephemeral=True,
+        )
 
     async def _animate_wait(self, status_message: discord.Message, stop: asyncio.Event) -> None:
         index = 0
@@ -113,8 +191,7 @@ class CompanyVerificationView(discord.ui.View):
             except asyncio.TimeoutError:
                 pass
 
-    @discord.ui.button(label="Verify Company", style=discord.ButtonStyle.success, emoji="🔍", custom_id="embassy:verify-company")
-    async def verify_company(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+    async def verify_company(self, interaction: discord.Interaction) -> None:
         if not isinstance(interaction.channel, discord.Thread):
             await interaction.response.send_message("This verification must be completed inside your request thread.", ephemeral=True)
             return
@@ -124,7 +201,9 @@ class CompanyVerificationView(discord.ui.View):
             await interaction.response.send_message("Only the applicant can verify this company.", ephemeral=True)
             return
 
-        button.disabled = True
+        verify_button = next((item for item in self.children if isinstance(item, discord.ui.Button) and item.custom_id == "embassy:verify-company"), None)
+        if verify_button is not None:
+            verify_button.disabled = True
         await interaction.response.defer()
         try:
             await interaction.message.edit(view=self)
@@ -150,7 +229,8 @@ class CompanyVerificationView(discord.ui.View):
         complete_cog = interaction.client.get_cog("CompleteEmbassyCog")
         if complete_cog is None:
             await finish_status("⚠️ **Verification service unavailable.** Please try again later.")
-            button.disabled = False
+            if verify_button is not None:
+                verify_button.disabled = False
             await interaction.message.edit(view=self)
             return
 
@@ -162,18 +242,21 @@ class CompanyVerificationView(discord.ui.View):
         except WarEraAPIError:
             logger.exception("WarEra API error during company ownership verification for %s", request["request_id"])
             await finish_status("⚠️ **WarEra could not be checked right now.** Your attempt was not consumed. Please try again in a moment.")
-            button.disabled = False
+            if verify_button is not None:
+                verify_button.disabled = False
             await interaction.message.edit(view=self)
             return
         except ValueError as exc:
             await finish_status(f"⚠️ {exc}")
-            button.disabled = False
+            if verify_button is not None:
+                verify_button.disabled = False
             await interaction.message.edit(view=self)
             return
         except Exception:
             logger.exception("Unexpected company ownership verification error for %s", request["request_id"])
             await finish_status("⚠️ **An unexpected verification error occurred.** Please contact an administrator.")
-            button.disabled = False
+            if verify_button is not None:
+                verify_button.disabled = False
             await interaction.message.edit(view=self)
             return
 
@@ -192,7 +275,8 @@ class CompanyVerificationView(discord.ui.View):
             )
             return
 
-        button.disabled = False
+        if verify_button is not None:
+            verify_button.disabled = False
         await interaction.message.edit(view=self)
         await finish_status(
             f"❌ **Company OTP not found.** Attempt **{attempts}/5**.\n\n"
@@ -254,8 +338,6 @@ class VerificationStartView(discord.ui.View):
         official_text = ", ".join(official_flags) if official_flags else "None detected"
         profile_link = warera_profile_link(profile)
 
-        # Update the original request message so the user sees the canonical
-        # in-game name and the canonical app.warera.io profile URL everywhere.
         request_message_id = request.get("request_message_id")
         if request_message_id:
             try:
@@ -280,7 +362,7 @@ class VerificationStartView(discord.ui.View):
                 f"**Player:** {profile_link}\n**Country:** {profile.country_name}\n**Official status:** {official_text}\n\n"
                 "**Your OTP:**\n"
                 f"```{otp}```\n\n"
-                "Use the code-block copy control in Discord to copy the OTP.\n\n"
+                "Use the **Copy OTP** button below if you are on mobile. Discord does not expose a bot API for directly writing to a user's device clipboard, so the button opens a private copyable code block.\n\n"
                 "Once the company name matches the OTP, click **Verify Company**. The bot will discover your company IDs with `company.getCompanies` and resolve every company through `company.getById` before accepting the match."
             ),
             color=discord.Color.blurple(),
@@ -323,7 +405,7 @@ class EmbassyRequestsCog(commands.Cog):
         except discord.Forbidden:
             await interaction.followup.send("I cannot send the Embassy request panel in that channel. Check View Channel and Send Messages permissions.", ephemeral=True)
         except discord.HTTPException:
-            logger.exception("Discord API failure while installing Embassy request panel")
+            logger.exception("Discord API failure while installing embassy request panel")
             await interaction.followup.send("Discord returned an error while installing the Embassy request panel. Please check the bot permissions and try again.", ephemeral=True)
 
     @app_commands.command(name="embassy-dashboard", description="Open the Embassy Management Dashboard.")
