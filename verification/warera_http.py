@@ -6,103 +6,183 @@ from urllib.parse import urlparse
 
 import aiohttp
 
-from .warera import WarEraProfile
+from .warera import WarEraClient, WarEraCompany, WarEraProfile
 
 
 class WarEraAPIError(RuntimeError):
     pass
 
 
-class WarEraHTTPClient:
-    """Small isolated HTTP client for the public WarEra API.
+class WarEraHTTPClient(WarEraClient):
+    """HTTP adapter for the public WarEra API used by Embassy verification.
 
-    The endpoint path is configurable because the API is versioned. The client
-    accepts both a numeric user id and a WarEra profile URL and normalizes the
-    response into the domain model used by the Embassy flow.
+    Verification deliberately does not trust the `company` field returned by
+    user.getUserById. That field represents the company the player works for.
+    Company ownership is established through company.getCompanies(userId),
+    followed by company.getById for each returned company.
     """
 
-    def __init__(self, base_url: str, profile_path: str = "/trpc/user.getUserLite", timeout: float = 12.0) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        *,
+        user_by_id_endpoint: str = "/trpc/user.getUserById",
+        country_by_id_endpoint: str = "/trpc/country.getCountryById",
+        government_by_country_endpoint: str = "/trpc/government.getByCountryId",
+        companies_endpoint: str = "/trpc/company.getCompanies",
+        company_by_id_endpoint: str = "/trpc/company.getById",
+        timeout: float = 12.0,
+    ) -> None:
         self.base_url = base_url.rstrip("/")
-        self.profile_path = profile_path
+        self.user_by_id_endpoint = user_by_id_endpoint
+        self.country_by_id_endpoint = country_by_id_endpoint
+        self.government_by_country_endpoint = government_by_country_endpoint
+        self.companies_endpoint = companies_endpoint
+        self.company_by_id_endpoint = company_by_id_endpoint
         self.timeout = aiohttp.ClientTimeout(total=timeout)
 
     @staticmethod
     def normalize_user_input(value: str) -> str:
         value = value.strip()
-        if value.isdigit():
-            return value
         parsed = urlparse(value)
         if parsed.scheme and parsed.netloc:
-            match = re.search(r"(?:profile|user)/([A-Za-z0-9_-]+)", parsed.path, re.I)
+            path = parsed.path.rstrip("/")
+            match = re.search(r"(?:profile|user)/([A-Za-z0-9_-]+)", path, re.I)
             if match:
                 return match.group(1)
+            tail = path.rsplit("/", 1)[-1]
+            if tail:
+                return tail
         match = re.search(r"(?:profile|user)[/:]([A-Za-z0-9_-]+)", value, re.I)
         if match:
             return match.group(1)
         return value
 
-    async def _get(self, path: str, params: dict[str, Any]) -> Any:
+    async def _post(self, path: str, payload: dict[str, Any]) -> Any:
         async with aiohttp.ClientSession(timeout=self.timeout) as session:
-            async with session.get(f"{self.base_url}{path}", params=params) as response:
+            async with session.post(f"{self.base_url}{path}", json=payload) as response:
                 text = await response.text()
                 if response.status >= 400:
-                    raise WarEraAPIError(f"WarEra API returned HTTP {response.status}: {text[:300]}")
+                    raise WarEraAPIError(f"WarEra API returned HTTP {response.status}: {text[:500]}")
                 try:
                     return await response.json(content_type=None)
                 except Exception as exc:
                     raise WarEraAPIError("WarEra API returned non-JSON data") from exc
 
     @staticmethod
-    def _unwrap(payload: Any) -> dict[str, Any]:
-        if isinstance(payload, dict):
-            if isinstance(payload.get("result"), dict):
-                result = payload["result"]
-                if isinstance(result.get("data"), dict):
-                    return result["data"]
-                return result
-            if isinstance(payload.get("data"), dict):
-                return payload["data"]
-            return payload
-        raise WarEraAPIError("Unexpected WarEra API response shape")
+    def _unwrap(payload: Any) -> Any:
+        if isinstance(payload, dict) and isinstance(payload.get("result"), dict):
+            result = payload["result"]
+            if "data" in result:
+                data = result["data"]
+                if isinstance(data, dict) and "json" in data:
+                    return data["json"]
+                return data
+            return result
+        return payload
+
+    @classmethod
+    def _object(cls, payload: Any) -> dict[str, Any]:
+        data = cls._unwrap(payload)
+        if not isinstance(data, dict):
+            raise WarEraAPIError("WarEra API returned an unexpected object")
+        return data
+
+    async def _get_user(self, user_id: str) -> dict[str, Any]:
+        return self._object(await self._post(self.user_by_id_endpoint, {"userId": user_id}))
+
+    async def _get_country(self, country_id: str) -> dict[str, Any]:
+        return self._object(await self._post(self.country_by_id_endpoint, {"countryId": country_id}))
+
+    async def _get_government(self, country_id: str) -> dict[str, Any]:
+        return self._object(await self._post(self.government_by_country_endpoint, {"countryId": country_id}))
 
     async def get_profile(self, profile_or_id: str) -> WarEraProfile:
         user_id = self.normalize_user_input(profile_or_id)
-        payload = await self._get(self.profile_path, {"input": user_id})
-        data = self._unwrap(payload)
+        data = await self._get_user(user_id)
 
-        # Support the common field names used by API revisions without making
-        # the rest of the bot depend on the transport representation.
-        country = data.get("country") or data.get("nation") or {}
-        government = data.get("government") or {}
-        country_id = str(data.get("countryId") or data.get("country_id") or country.get("id") or "")
-        country_name = str(data.get("countryName") or data.get("country_name") or country.get("name") or "Unknown")
-        uid = str(data.get("id") or data.get("userId") or data.get("user_id") or user_id)
-        roles = {str(x).lower() for x in (data.get("roles") or []) if isinstance(x, (str, int))}
-        title = str(data.get("title") or data.get("role") or "").lower()
-        gov_role = str(government.get("role") or government.get("title") or "").lower()
+        canonical_id = str(data.get("_id") or data.get("id") or data.get("userId") or user_id)
+        country_id = str(data.get("country") or data.get("countryId") or data.get("country_id") or "")
+        if not country_id:
+            raise WarEraAPIError("WarEra user profile did not contain a country ID")
+
+        country_data = await self._get_country(country_id)
+        country = country_data.get("country") if isinstance(country_data.get("country"), dict) else country_data
+        country_name = str(country.get("name") or country.get("countryName") or country_id)
+
+        government_data = await self._get_government(country_id)
+        government = government_data.get("government") if isinstance(government_data.get("government"), dict) else government_data
+
+        def role_text(obj: Any) -> str:
+            if not isinstance(obj, dict):
+                return ""
+            values = [obj.get("role"), obj.get("title"), obj.get("position"), obj.get("type")]
+            return " ".join(str(value).lower() for value in values if value)
+
+        # Government endpoint shape can vary between API revisions. We inspect
+        # the government object plus common user-side flags without assuming
+        # that the employment company field means official status.
+        gov_text = role_text(government)
+        user_text = role_text(data)
+        roles = {str(value).lower() for value in (data.get("roles") or []) if isinstance(value, (str, int))}
 
         return WarEraProfile(
-            user_id=uid,
-            profile_url=str(data.get("profileUrl") or data.get("profile_url") or f"https://warera.io/profile/{uid}"),
+            user_id=canonical_id,
+            profile_url=f"https://warera.io/profile/{canonical_id}",
+            username=str(data.get("username") or data.get("name") or canonical_id),
             country_id=country_id,
             country_name=country_name,
-            is_president=bool(data.get("isPresident") or "president" in roles or "president" in title or "president" in gov_role),
-            is_vice_president=bool(data.get("isVicePresident") or "vice president" in roles or "vice_president" in roles or "vice president" in title),
-            is_eam_or_mofa=bool(data.get("isEamOrMofa") or data.get("isForeignMinister") or "eam" in roles or "foreign minister" in roles or "mofa" in roles),
+            is_president=bool(data.get("isPresident") or "president" in roles or "president" in user_text or "president" in gov_text),
+            is_vice_president=bool(data.get("isVicePresident") or "vice president" in roles or "vice_president" in roles or "vice president" in user_text),
+            is_eam_or_mofa=bool(data.get("isEamOrMofa") or data.get("isForeignMinister") or "eam" in roles or "foreign minister" in roles or "mofa" in roles or "foreign affairs" in gov_text),
+        )
+
+    async def get_companies(self, user_id: str) -> list[WarEraCompany]:
+        companies: list[WarEraCompany] = []
+        cursor: str | None = None
+
+        while True:
+            payload = {"userId": user_id, "perPage": 100}
+            if cursor:
+                payload["cursor"] = cursor
+            data = self._object(await self._post(self.companies_endpoint, payload))
+            items = data.get("items") or data.get("companies") or []
+            if not isinstance(items, list):
+                raise WarEraAPIError("WarEra company list returned an unexpected items field")
+
+            for item in items:
+                company_id = str(item.get("_id") or item.get("id") or item) if isinstance(item, dict) else str(item)
+                if company_id:
+                    companies.append(WarEraCompany(company_id=company_id, owner_user_id=user_id, name=str(item.get("name") or "") if isinstance(item, dict) else ""))
+
+            next_cursor = data.get("nextCursor") or data.get("next_cursor") or data.get("cursor")
+            if not next_cursor or next_cursor == cursor:
+                break
+            cursor = str(next_cursor)
+
+        return companies
+
+    async def get_company(self, company_id: str) -> WarEraCompany:
+        data = self._object(await self._post(self.company_by_id_endpoint, {"companyId": company_id}))
+        company = data.get("company") if isinstance(data.get("company"), dict) else data
+        return WarEraCompany(
+            company_id=str(company.get("_id") or company.get("id") or company_id),
+            owner_user_id=str(company.get("user") or company.get("userId") or ""),
+            name=str(company.get("name") or ""),
         )
 
     async def get_company_names(self, user_id: str) -> list[str]:
-        payload = await self._get(self.profile_path, {"input": user_id})
-        data = self._unwrap(payload)
-        companies = data.get("companies") or data.get("company") or []
-        if isinstance(companies, dict):
-            companies = [companies]
+        """Return names from every company owned by the user.
+
+        The company list endpoint is used only to discover IDs. Each ID is
+        resolved through company.getById before its name is trusted.
+        """
+        discovered = await self.get_companies(user_id)
         names: list[str] = []
-        for company in companies:
-            if isinstance(company, str):
-                names.append(company)
-            elif isinstance(company, dict):
-                name = company.get("name") or company.get("companyName")
-                if name:
-                    names.append(str(name))
+        for company in discovered:
+            detail = await self.get_company(company.company_id)
+            if detail.owner_user_id and detail.owner_user_id != user_id:
+                continue
+            if detail.name:
+                names.append(detail.name)
         return names
