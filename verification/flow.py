@@ -29,13 +29,16 @@ class VerificationFlow:
 
         profile = await self.warera.get_profile(supplied)
         now = datetime.now(timezone.utc)
+        safe_username = str(profile.username).replace("\\", "\\\\").replace("[", "\\[").replace("]", "\\]")
+        profile_display = f"[{safe_username}]({profile.profile_url})"
         await self.requests.update_one(
             {"request_id": request_id},
             {"$set": {
                 "state": RequestState.PROFILE_RESOLVED.value,
                 "warera_user_id": profile.user_id,
                 "warera_username": profile.username,
-                "warera_profile_url": profile.profile_url,
+                "warera_profile_url": profile_display,
+                "warera_profile_raw_url": profile.profile_url,
                 "verified_country_id": profile.country_id,
                 "verified_country_name": profile.country_name,
                 "official_flags": {
