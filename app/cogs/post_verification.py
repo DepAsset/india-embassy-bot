@@ -16,13 +16,14 @@ logger = logging.getLogger(__name__)
 class EmbassyChoicePersistentView(discord.ui.View):
     """Persistent, request-specific Embassy choice controls."""
 
-    def __init__(self, bot: commands.Bot, request_id: str):
+    def __init__(self, bot: commands.Bot, request_id: str, country_name: str | None = None):
         super().__init__(timeout=None)
         self.bot = bot
         self.request_id = request_id
+        embassy_label = f"{country_name} Embassy" if country_name else "Your Country Embassy"
 
         own = discord.ui.Button(
-            label="My Country Embassy",
+            label=embassy_label[:80],
             emoji="🏛️",
             style=discord.ButtonStyle.success,
             custom_id=f"embassy:choice:own:{request_id}",
@@ -71,7 +72,8 @@ class PostVerificationCog(commands.Cog):
         verified = requests.find({"state": RequestState.VERIFIED.value, "active": True})
         async for request in verified:
             request_id = str(request["request_id"])
-            self.bot.add_view(EmbassyChoicePersistentView(self.bot, request_id))
+            country_name = str(request.get("verified_country_name") or "Your Country")
+            self.bot.add_view(EmbassyChoicePersistentView(self.bot, request_id, country_name))
 
         reviews = requests.find({"state": {"$in": [RequestState.DIPLOMAT_REVIEW.value, RequestState.GOVERNMENT_REVIEW.value]}, "active": True})
         async for request in reviews:
@@ -108,16 +110,17 @@ class PostVerificationCog(commands.Cog):
             if not isinstance(thread, discord.Thread):
                 continue
 
+            country_name = str(request.get("verified_country_name") or "Your Country")
             embed = discord.Embed(
                 title="🏛️ Embassy Access",
                 description=(
                     "Your WarEra identity and company ownership have been successfully verified.\n\n"
-                    f"**Verified Country:** {request.get('verified_country_name', 'Unknown')}\n\n"
+                    f"**Verified Country:** {country_name}\n\n"
                     "Your verification is complete. Now tell us which Embassy you would like to join."
                 ),
                 color=discord.Color.green(),
             )
-            view = EmbassyChoicePersistentView(self.bot, request_id)
+            view = EmbassyChoicePersistentView(self.bot, request_id, country_name)
             self.bot.add_view(view)
             await thread.send(embed=embed, view=view)
 
