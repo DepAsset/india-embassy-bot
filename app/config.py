@@ -32,8 +32,13 @@ class Settings(BaseSettings):
 
     mongodb_uri: str
     mongodb_database: str
+
     warera_api_base: str
-    warera_api_profile_path: str = "/trpc/user.getUserLite"
+    warera_user_by_id_endpoint: str = "/trpc/user.getUserById"
+    warera_country_by_id_endpoint: str = "/trpc/country.getCountryById"
+    warera_government_by_country_endpoint: str = "/trpc/government.getByCountryId"
+    warera_companies_endpoint: str = "/trpc/company.getCompanies"
+    warera_company_by_id_endpoint: str = "/trpc/company.getById"
 
     health_host: str = "0.0.0.0"
     health_port: int = 10000
