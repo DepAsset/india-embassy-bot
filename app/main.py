@@ -14,6 +14,8 @@ import app.embassy_patches  # noqa: F401,E402
 import app.integration_patches  # noqa: F401,E402
 import app.embassy_user_fixes  # noqa: F401,E402
 import app.safety_patches  # noqa: F401,E402
+import app.integration_completion  # noqa: F401,E402
+import app.dashboard_completion  # noqa: F401,E402
 from app.integration_completion import restore_surprise_views  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
