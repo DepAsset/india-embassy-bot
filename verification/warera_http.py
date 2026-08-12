@@ -25,6 +25,7 @@ class WarEraHTTPClient(WarEraClient):
     def __init__(
         self,
         base_url: str,
+        legacy_profile_path: str | None = None,
         *,
         user_by_id_endpoint: str = "/trpc/user.getUserById",
         country_by_id_endpoint: str = "/trpc/country.getCountryById",
@@ -34,6 +35,11 @@ class WarEraHTTPClient(WarEraClient):
         timeout: float = 12.0,
     ) -> None:
         self.base_url = base_url.rstrip("/")
+        # Backward compatibility with the existing cog constructor. The old
+        # second positional argument was a profile path; the new explicit
+        # endpoint configuration is authoritative when supplied by Settings.
+        if legacy_profile_path and legacy_profile_path.endswith("/user.getUserById"):
+            user_by_id_endpoint = legacy_profile_path
         self.user_by_id_endpoint = user_by_id_endpoint
         self.country_by_id_endpoint = country_by_id_endpoint
         self.government_by_country_endpoint = government_by_country_endpoint
@@ -119,9 +125,6 @@ class WarEraHTTPClient(WarEraClient):
             values = [obj.get("role"), obj.get("title"), obj.get("position"), obj.get("type")]
             return " ".join(str(value).lower() for value in values if value)
 
-        # Government endpoint shape can vary between API revisions. We inspect
-        # the government object plus common user-side flags without assuming
-        # that the employment company field means official status.
         gov_text = role_text(government)
         user_text = role_text(data)
         roles = {str(value).lower() for value in (data.get("roles") or []) if isinstance(value, (str, int))}
