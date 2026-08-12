@@ -14,6 +14,7 @@ COPY access ./access
 COPY approval ./approval
 COPY embassy ./embassy
 COPY migration ./migration
+COPY verification ./verification
 COPY .env.example ./.env.example
 
 CMD ["python", "-m", "app"]
