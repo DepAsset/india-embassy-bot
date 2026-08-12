@@ -1,0 +1,14 @@
+[
+  {
+    "position": 103,
+    "source_name": "afganistan-embassy",
+    "embassy_id": "afghanistan",
+    "country_key": "afghanistan",
+    "channel_id": 1428503770492305508,
+    "category_id": 1371015715662069821,
+    "access_role_id": 1428504069127016539,
+    "access_role_ids": [1428504069127016539],
+    "active": true,
+    "remarks": null
+  }
+]
