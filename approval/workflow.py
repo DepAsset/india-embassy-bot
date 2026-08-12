@@ -14,6 +14,8 @@ class Route(StrEnum):
     SPECIAL_OFFICIAL = "SPECIAL_OFFICIAL"
     FOREIGN_DIPLOMAT = "FOREIGN_DIPLOMAT"
     INDIAN_GOVERNMENT = "INDIAN_GOVERNMENT"
+    # Compatibility alias used by the Discord routing layer.
+    GOVERNMENT_REVIEW = "INDIAN_GOVERNMENT"
 
 
 class Decision(StrEnum):
