@@ -7,6 +7,7 @@ from discord.ext import commands
 from .config import settings
 from .health import start_health_server
 from core.database import Database
+from migration.embassy_seed import seed_legacy_embassies
 
 # Apply Embassy-flow fixes before any post-verification handlers are loaded.
 import app.embassy_patches  # noqa: F401,E402
@@ -30,6 +31,7 @@ class EmbassyBot(commands.Bot):
         super().__init__(command_prefix="!", intents=intents)
         self.health_runner = None
         self.database = Database(settings.mongodb_uri, settings.mongodb_database)
+        self.legacy_embassy_migration_done = False
 
     async def setup_hook(self) -> None:
         await self.database.initialize()
@@ -60,6 +62,18 @@ class EmbassyBot(commands.Bot):
             logger.error("Configured guild %s is not available", settings.discord_guild_id)
             return
         logger.info("Connected to guild: %s (%s)", guild.name, guild.id)
+
+        if not self.legacy_embassy_migration_done:
+            try:
+                result = await seed_legacy_embassies(self.database, guild)
+                self.legacy_embassy_migration_done = True
+                if result["status"]:
+                    logger.info(
+                        "Legacy Embassy migration completed: inserted=%s updated=%s missing_channels=%s",
+                        result["inserted"], result["updated"], result["missing_channels"],
+                    )
+            except Exception:
+                logger.exception("Legacy Embassy migration failed")
 
     async def close(self) -> None:
         if self.health_runner is not None:
