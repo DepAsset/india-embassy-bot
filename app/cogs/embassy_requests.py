@@ -75,7 +75,7 @@ class WarEraProfileModal(discord.ui.Modal, title="Embassy Verification"):
                     ),
                     color=discord.Color.dark_red(),
                 ),
-                view=VerificationStartView(request_id=request_id),
+                view=VerificationStartView(self.service),
             )
         except discord.Forbidden:
             await interaction.response.send_message(
@@ -108,9 +108,9 @@ class RequestPanelView(discord.ui.View):
 class VerificationStartView(discord.ui.View):
     """Persistent bridge to the WarEra profile/OTP implementation slice."""
 
-    def __init__(self, request_id: str) -> None:
+    def __init__(self, service: EmbassyRequestService) -> None:
         super().__init__(timeout=None)
-        self.request_id = request_id
+        self.service = service
 
     @discord.ui.button(
         label="Continue Verification",
@@ -119,6 +119,18 @@ class VerificationStartView(discord.ui.View):
         custom_id="embassy:continue-verification",
     )
     async def continue_verification(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        if not isinstance(interaction.channel, discord.Thread):
+            await interaction.response.send_message("This verification control must be used inside your request thread.", ephemeral=True)
+            return
+
+        request = await self.service.database.collection("requests").find_one({"thread_id": interaction.channel.id})
+        if not request:
+            await interaction.response.send_message("This request could not be found. Please contact an administrator.", ephemeral=True)
+            return
+        if request.get("discord_user_id") != interaction.user.id:
+            await interaction.response.send_message("Only the applicant can continue this verification.", ephemeral=True)
+            return
+
         await interaction.response.send_message(
             "Your profile is captured. WarEra profile resolution and OTP verification are the next implementation stage.",
             ephemeral=True,
@@ -132,6 +144,7 @@ class EmbassyRequestsCog(commands.Cog):
 
     async def cog_load(self) -> None:
         self.bot.add_view(RequestPanelView(self.service))
+        self.bot.add_view(VerificationStartView(self.service))
 
     @app_commands.command(name="embassy-setup", description="Install or refresh the Embassy request panel.")
     async def embassy_setup(self, interaction: discord.Interaction) -> None:
