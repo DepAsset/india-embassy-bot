@@ -7,6 +7,7 @@ from discord.ext import commands
 from .config import settings
 from .health import start_health_server
 from core.database import Database
+from verification.warera import WarEraHttpClient
 
 logging.basicConfig(
     level=logging.INFO,
@@ -25,6 +26,7 @@ class EmbassyBot(commands.Bot):
         super().__init__(command_prefix="!", intents=intents)
         self.health_runner = None
         self.database = Database(settings.mongodb_uri, settings.mongodb_database)
+        self.warera = WarEraHttpClient(settings.warera_api_base)
 
     async def setup_hook(self) -> None:
         await self.database.connect()
@@ -50,6 +52,7 @@ class EmbassyBot(commands.Bot):
     async def close(self) -> None:
         if self.health_runner is not None:
             await self.health_runner.cleanup()
+        await self.warera.close()
         await self.database.close()
         await super().close()
 
