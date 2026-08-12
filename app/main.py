@@ -35,6 +35,12 @@ class EmbassyBot(commands.Bot):
         await self.database.initialize()
         self.health_runner = await start_health_server(settings.health_host, settings.health_port)
 
+        # Register the persistent welcome-message surprise button before the
+        # user-facing extensions are loaded so existing Embassy messages keep
+        # working after a bot restart.
+        from app.embassy_patches import CuratedSurpriseView
+        self.add_view(CuratedSurpriseView())
+
         # Load the dependency container first, then the user-facing request
         # controls, then durable post-verification recovery.
         await self.load_extension("app.cogs.complete")
