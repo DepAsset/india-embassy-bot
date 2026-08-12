@@ -7,6 +7,7 @@ import discord
 
 from core.audit import AuditLogger
 from core.database import Database
+from core.state import RequestState
 
 
 class EmbassyRequestService:
@@ -40,6 +41,7 @@ class EmbassyRequestService:
             "thread_id": thread.id,
             "active": True,
             "status": "PENDING_VERIFICATION",
+            "state": RequestState.SUBMITTED.value,
             "created_at": datetime.now(timezone.utc),
         })
         await self.audit.write("REQUEST_CREATED", actor_id=applicant.id, request_id=request_id, thread_id=thread.id)
