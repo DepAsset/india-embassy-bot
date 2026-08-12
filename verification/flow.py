@@ -34,6 +34,7 @@ class VerificationFlow:
             {"$set": {
                 "state": RequestState.PROFILE_RESOLVED.value,
                 "warera_user_id": profile.user_id,
+                "warera_username": profile.username,
                 "warera_profile_url": profile.profile_url,
                 "verified_country_id": profile.country_id,
                 "verified_country_name": profile.country_name,
