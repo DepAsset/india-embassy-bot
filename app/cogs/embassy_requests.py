@@ -68,14 +68,24 @@ class WarEraProfileModal(discord.ui.Modal, title="Embassy Verification"):
                 view=VerificationStartView(self.service),
             )
         except discord.Forbidden:
-            await interaction.response.send_message(
-                "I cannot create the private request thread. Please contact an administrator.", ephemeral=True
-            )
+            if not interaction.response.is_done():
+                await interaction.response.send_message(
+                    "I cannot create the private request thread. Please contact an administrator.", ephemeral=True
+                )
+            else:
+                await interaction.followup.send(
+                    "I cannot create the private request thread. Please contact an administrator.", ephemeral=True
+                )
         except discord.HTTPException:
             logger.exception("Discord API failure while creating embassy request")
-            await interaction.response.send_message(
-                "Discord returned an error while creating your request. Please try again later.", ephemeral=True
-            )
+            if not interaction.response.is_done():
+                await interaction.response.send_message(
+                    "Discord returned an error while creating your request. Please try again later.", ephemeral=True
+                )
+            else:
+                await interaction.followup.send(
+                    "Discord returned an error while creating your request. Please try again later.", ephemeral=True
+                )
 
 
 class RequestPanelView(discord.ui.View):
@@ -150,19 +160,36 @@ class EmbassyRequestsCog(commands.Cog):
                 "CHANNEL_REQUEST_PARENT_ID must point to a normal text channel.", ephemeral=True
             )
             return
-        await channel.send(
-            embed=discord.Embed(
-                title="🇮🇳 Embassy Access System",
-                description=(
-                    "Need access to an Embassy? Click the button below to begin.\n\n"
-                    "You will first provide your **WarEra profile link or ID**. "
-                    "The bot will then create a private request thread for the verification process."
+
+        # A Discord interaction must be acknowledged within a few seconds.
+        # Creating/sending the panel can take long enough to exceed that window,
+        # so acknowledge first and send the final result as a follow-up.
+        await interaction.response.defer(ephemeral=True)
+        try:
+            await channel.send(
+                embed=discord.Embed(
+                    title="🇮🇳 Embassy Access System",
+                    description=(
+                        "Need access to an Embassy? Click the button below to begin.\n\n"
+                        "You will first provide your **WarEra profile link or ID**. "
+                        "The bot will then create a private request thread for the verification process."
+                    ),
+                    color=discord.Color.dark_red(),
                 ),
-                color=discord.Color.dark_red(),
-            ),
-            view=RequestPanelView(self.service),
-        )
-        await interaction.response.send_message("Embassy request panel installed.", ephemeral=True)
+                view=RequestPanelView(self.service),
+            )
+            await interaction.followup.send("Embassy request panel installed.", ephemeral=True)
+        except discord.Forbidden:
+            await interaction.followup.send(
+                "I cannot send the Embassy request panel in that channel. Check View Channel and Send Messages permissions.",
+                ephemeral=True,
+            )
+        except discord.HTTPException:
+            logger.exception("Discord API failure while installing Embassy request panel")
+            await interaction.followup.send(
+                "Discord returned an error while installing the Embassy request panel. Please check the bot permissions and try again.",
+                ephemeral=True,
+            )
 
     @app_commands.command(name="embassy-dashboard", description="Open the Embassy Management Dashboard.")
     async def embassy_dashboard(self, interaction: discord.Interaction) -> None:
