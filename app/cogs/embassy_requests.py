@@ -15,8 +15,14 @@ from verification.warera_http import WarEraAPIError
 logger = logging.getLogger(__name__)
 
 
+def warera_profile_link(profile) -> str:
+    """Return the canonical in-game name as a clickable WarEra profile link."""
+    name = discord.utils.escape_markdown(str(profile.username))
+    return f"[{name}]({profile.profile_url})"
+
+
 class WarEraProfileModal(discord.ui.Modal, title="Embassy Verification"):
-    profile = discord.ui.TextInput(label="WarEra Profile Link or ID", placeholder="https://warera.io/profile/... or your WarEra User ID", min_length=1, max_length=200, required=True)
+    profile = discord.ui.TextInput(label="WarEra Profile Link or ID", placeholder="https://app.warera.io/user/... or your WarEra User ID", min_length=1, max_length=200, required=True)
 
     def __init__(self, service: EmbassyRequestService) -> None:
         super().__init__(timeout=300)
@@ -37,13 +43,22 @@ class WarEraProfileModal(discord.ui.Modal, title="Embassy Verification"):
                 return
             await self.service.database.collection("requests").update_one({"request_id": request_id}, {"$set": {"profile_input": self.profile.value.strip()}})
             await interaction.response.send_message(f"Your private Embassy request has been created: {thread.mention}", ephemeral=True)
-            await thread.send(
+            message = await thread.send(
                 embed=discord.Embed(
                     title="🇮🇳 Embassy Access Request",
-                    description=("Your request has been created successfully.\n\n**WarEra Profile:**\n" f"`{self.profile.value.strip()}`\n\n" "Click **Continue Verification** to resolve your WarEra identity and begin OTP verification."),
+                    description=(
+                        "Your request has been created successfully.\n\n"
+                        "**WarEra Profile:**\n"
+                        f"`{self.profile.value.strip()}`\n\n"
+                        "Click **Continue Verification** to resolve your WarEra identity and begin OTP verification."
+                    ),
                     color=discord.Color.dark_red(),
                 ),
                 view=VerificationStartView(self.service),
+            )
+            await self.service.database.collection("requests").update_one(
+                {"request_id": request_id},
+                {"$set": {"request_message_id": message.id}},
             )
         except discord.Forbidden:
             message = "I cannot create the private request thread. Please contact an administrator."
@@ -109,9 +124,6 @@ class CompanyVerificationView(discord.ui.View):
             await interaction.response.send_message("Only the applicant can verify this company.", ephemeral=True)
             return
 
-        # The button belongs to interaction.message, not the interaction webhook
-        # response. Keeping these separate is important: otherwise a failed
-        # attempt leaves the visible Verify Company button permanently disabled.
         button.disabled = True
         await interaction.response.defer()
         try:
@@ -119,8 +131,6 @@ class CompanyVerificationView(discord.ui.View):
         except discord.HTTPException:
             logger.exception("Could not disable company verification button for %s", request["request_id"])
 
-        # Progress messages are deliberately sent BELOW the verification embed.
-        # They must never replace or edit the WarEra Company Verification message.
         status_message = await interaction.channel.send(self.WAITING_MESSAGES[0])
         stop_animation = asyncio.Event()
         animation_task = asyncio.create_task(self._animate_wait(status_message, stop_animation))
@@ -173,7 +183,6 @@ class CompanyVerificationView(discord.ui.View):
                 "Your WarEra identity and company ownership have been verified.\n\n"
                 "Your request can now proceed to Embassy access review."
             )
-            # Successful verification is terminal for this button.
             return
 
         if lock_until is not None:
@@ -181,13 +190,8 @@ class CompanyVerificationView(discord.ui.View):
                 f"🔒 **Verification locked.** You have used all **5 attempts**. "
                 f"Try again after <t:{int(lock_until.timestamp())}:R>."
             )
-            # The service will allow the same request to continue after the lock
-            # expires; keep the button disabled while it is genuinely locked.
             return
 
-        # Normal failed attempt: re-enable the ORIGINAL button on the ORIGINAL
-        # WarEra Company Verification embed. This makes attempt 2/5, 3/5, etc.
-        # immediately usable without recreating the request.
         button.disabled = False
         await interaction.message.edit(view=self)
         await finish_status(
@@ -248,11 +252,32 @@ class VerificationStartView(discord.ui.View):
         if profile.is_eam_or_mofa:
             official_flags.append("EAM / Foreign Affairs")
         official_text = ", ".join(official_flags) if official_flags else "None detected"
+        profile_link = warera_profile_link(profile)
+
+        # Update the original request message so the user sees the canonical
+        # in-game name and the canonical app.warera.io profile URL everywhere.
+        request_message_id = request.get("request_message_id")
+        if request_message_id:
+            try:
+                request_message = await interaction.channel.fetch_message(int(request_message_id))
+                resolved_embed = discord.Embed(
+                    title="🇮🇳 Embassy Access Request",
+                    description=(
+                        "Your request has been created successfully.\n\n"
+                        f"**WarEra:** {profile_link}\n\n"
+                        "Your WarEra identity has been resolved. Click **Continue Verification** below to continue with company ownership verification."
+                    ),
+                    color=discord.Color.dark_red(),
+                )
+                await request_message.edit(embed=resolved_embed)
+            except (discord.HTTPException, discord.NotFound):
+                logger.exception("Could not update initial Embassy request message for %s", request["request_id"])
+
         embed = discord.Embed(
             title="🔐 WarEra Company Verification",
             description=(
                 "Your WarEra identity has been resolved. Now create or rename one of your **owned companies** so its exact name matches the OTP below.\n\n"
-                f"**Player:** {profile.username}\n**Country:** {profile.country_name}\n**Official status:** {official_text}\n\n"
+                f"**Player:** {profile_link}\n**Country:** {profile.country_name}\n**Official status:** {official_text}\n\n"
                 "**Your OTP:**\n"
                 f"```{otp}```\n\n"
                 "Use the code-block copy control in Discord to copy the OTP.\n\n"
@@ -261,7 +286,10 @@ class VerificationStartView(discord.ui.View):
             color=discord.Color.blurple(),
         )
         await interaction.channel.send(embed=embed, view=CompanyVerificationView(self.service))
-        await interaction.followup.send("Your WarEra profile was resolved and an OTP was issued. Follow the instructions in this request thread.", ephemeral=True)
+        await interaction.followup.send(
+            f"WarEra identity resolved as {profile_link}. An OTP was issued; follow the instructions in this request thread.",
+            ephemeral=True,
+        )
 
 
 class EmbassyRequestsCog(commands.Cog):
