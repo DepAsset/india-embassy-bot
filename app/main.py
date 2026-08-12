@@ -32,7 +32,12 @@ class EmbassyBot(commands.Bot):
             settings.health_host,
             settings.health_port,
         )
-        # Feature cogs/services will be loaded here as they are implemented.
+        await self.load_extension("app.cogs.embassy_requests")
+
+        guild = discord.Object(id=settings.discord_guild_id)
+        self.tree.copy_global_to(guild=guild)
+        await self.tree.sync(guild=guild)
+        logger.info("Synced Embassy System application commands to guild %s", settings.discord_guild_id)
 
     async def on_ready(self) -> None:
         logger.info("Logged in as %s", self.user)
