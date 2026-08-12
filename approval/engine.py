@@ -5,8 +5,8 @@ from datetime import datetime, timezone
 from enum import StrEnum
 from typing import Any
 
+from access.service import AccessService
 from core.database import Database
-from access.assignments import AssignmentService
 
 
 class ApprovalRoute(StrEnum):
@@ -32,16 +32,11 @@ class RouteContext:
 
 
 class ApprovalEngine:
-    """Single routing/decision layer for Embassy requests.
+    """Single routing and decision layer for Embassy requests."""
 
-    It contains business decisions only. Discord UI and notifications remain
-    adapters around this service so the rules cannot be bypassed by a command.
-    """
-
-    def __init__(self, database: Database, assignments: AssignmentService) -> None:
-        self.requests = database.collection("embassy_requests")
+    def __init__(self, database: Database, assignments: AccessService) -> None:
+        self.requests = database.collection("requests")
         self.approvals = database.collection("approval_decisions")
-        self.preapprovals = database.collection("preapprovals")
         self.assignments = assignments
 
     async def resolve_route(self, context: RouteContext) -> ApprovalRoute:
@@ -49,10 +44,7 @@ class ApprovalEngine:
             return ApprovalRoute.PREAPPROVED
         if context.is_special_official:
             return ApprovalRoute.SPECIAL_OFFICIAL
-
-        embassy = await self.requests.find_one(
-            {"request_id": context.request_id}, {"embassy_country_key": 1}
-        )
+        embassy = await self.requests.find_one({"request_id": context.request_id}, {"embassy_country_key": 1})
         embassy_country = (embassy or {}).get("embassy_country_key", "").lower()
         if embassy_country and embassy_country == context.applicant_country_key.lower():
             return ApprovalRoute.FOREIGN_DIPLOMAT
@@ -66,15 +58,10 @@ class ApprovalEngine:
         route: ApprovalRoute,
         reason: str | None = None,
     ) -> bool:
-        """Atomically accept the first decision for a request.
-
-        Returns False when another authorized actor already decided the request.
-        This is the first-click-wins invariant used by diplomat approvals.
-        """
         now = datetime.now(timezone.utc)
         result = await self.approvals.update_one(
-            {"request_id": request_id, "decision": {"$exists": False}},
-            {"$set": {
+            {"request_id": request_id, "decided_at": {"$exists": False}},
+            {"$setOnInsert": {
                 "request_id": request_id,
                 "actor_id": actor_id,
                 "decision": decision.value,
@@ -84,7 +71,7 @@ class ApprovalEngine:
             }},
             upsert=True,
         )
-        return result.upserted_id is not None or result.modified_count == 1
+        return bool(result.upserted_id)
 
     async def get_decision(self, request_id: str) -> dict[str, Any] | None:
         return await self.approvals.find_one({"request_id": request_id})
