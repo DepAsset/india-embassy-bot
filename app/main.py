@@ -6,6 +6,7 @@ from discord.ext import commands
 
 from .config import settings
 from .health import start_health_server
+from core.database import Database
 
 logging.basicConfig(
     level=logging.INFO,
@@ -23,8 +24,10 @@ class EmbassyBot(commands.Bot):
         intents.message_content = True
         super().__init__(command_prefix="!", intents=intents)
         self.health_runner = None
+        self.database = Database(settings.mongodb_uri, settings.mongodb_database)
 
     async def setup_hook(self) -> None:
+        await self.database.connect()
         self.health_runner = await start_health_server(
             settings.health_host,
             settings.health_port,
@@ -42,6 +45,7 @@ class EmbassyBot(commands.Bot):
     async def close(self) -> None:
         if self.health_runner is not None:
             await self.health_runner.cleanup()
+        await self.database.close()
         await super().close()
 
 
