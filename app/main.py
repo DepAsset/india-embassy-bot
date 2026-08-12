@@ -6,6 +6,7 @@ from discord.ext import commands
 
 from .config import settings
 from .health import start_health_server
+from core.database import Database
 
 logging.basicConfig(
     level=logging.INFO,
@@ -23,13 +24,20 @@ class EmbassyBot(commands.Bot):
         intents.message_content = True
         super().__init__(command_prefix="!", intents=intents)
         self.health_runner = None
+        self.database = Database(settings.mongodb_uri, settings.mongodb_database)
 
     async def setup_hook(self) -> None:
+        await self.database.connect()
         self.health_runner = await start_health_server(
             settings.health_host,
             settings.health_port,
         )
-        # Feature cogs/services will be loaded here as they are implemented.
+        await self.load_extension("app.cogs.embassy_requests")
+
+        guild = discord.Object(id=settings.discord_guild_id)
+        self.tree.copy_global_to(guild=guild)
+        await self.tree.sync(guild=guild)
+        logger.info("Synced Embassy System application commands to guild %s", settings.discord_guild_id)
 
     async def on_ready(self) -> None:
         logger.info("Logged in as %s", self.user)
@@ -42,6 +50,7 @@ class EmbassyBot(commands.Bot):
     async def close(self) -> None:
         if self.health_runner is not None:
             await self.health_runner.cleanup()
+        await self.database.close()
         await super().close()
 
 
