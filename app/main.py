@@ -9,6 +9,9 @@ from .health import start_health_server
 from core.database import Database
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
+# Render/UptimeRobot health checks are intentionally quiet. The endpoint still
+# responds normally; only the repetitive aiohttp access log is suppressed.
+logging.getLogger("aiohttp.access").setLevel(logging.WARNING)
 logger = logging.getLogger("india-embassy-bot")
 
 
@@ -27,14 +30,8 @@ class EmbassyBot(commands.Bot):
         await self.database.initialize()
         self.health_runner = await start_health_server(settings.health_host, settings.health_port)
 
-        # Core service integration.
         await self.load_extension("app.cogs.complete")
-
-        # Public/admin dashboards, request panel, verification entry point,
-        # and persistent dashboard views.
         await self.load_extension("app.cogs.embassy_requests")
-
-        # OTP recovery / government review controls.
         await self.load_extension("app.cogs.recovery")
 
         guild = discord.Object(id=settings.discord_guild_id)
