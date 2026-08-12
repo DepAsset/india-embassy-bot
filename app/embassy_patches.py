@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import random
 from datetime import datetime, timezone
 
@@ -11,6 +12,8 @@ from approval.workflow import Route
 from access.models import AccessSource, AssignmentType
 from access.discord import DiscordAccessProvisioner
 
+logger = logging.getLogger(__name__)
+
 WELCOME_MESSAGES = (
     "🎉 **Welcome to the Embassy family!** Your diplomatic passport has officially found its home. We are glad to have you with us!",
     "🌍 **Welcome, diplomat!** A new chapter of your diplomatic journey begins today. Your Embassy doors are open!",
@@ -21,6 +24,27 @@ WELCOME_MESSAGES = (
     "🎊 **The Embassy has a new diplomat!** Welcome aboard. Your diplomatic seat at the table is ready!",
     "🌟 **Welcome, diplomat!** You joined an Embassy today, and hopefully found a new corner of the community to call home. Glad to have you here!",
 )
+
+KLIPY_SURPRISE_URL = "https://klipy.com/gifs/rickroll-never-gonna-give-you-up-9"
+
+
+class CuratedSurpriseView(discord.ui.View):
+    """Persistent surprise button attached to Embassy welcome messages."""
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="Click for a specially curated surprise for you",
+        emoji="🎁",
+        style=discord.ButtonStyle.primary,
+        custom_id="embassy:curated-surprise",
+    )
+    async def surprise(self, interaction: discord.Interaction, _: discord.ui.Button):
+        # Post the requested GIF page URL into the Embassy chat so Discord can
+        # unfurl it for everyone in the Embassy channel.
+        await interaction.response.send_message("🎁 Your specially curated surprise has arrived!")
+        await interaction.channel.send(KLIPY_SURPRISE_URL)
 
 
 def _role_mentions(guild: discord.Guild) -> str:
@@ -57,6 +81,37 @@ def _welcome_embed(member: discord.Member, embassy, *, new_embassy: bool = False
         )
     embed.set_footer(text="Embassy Access System • Welcome aboard")
     return embed
+
+
+async def _dm_applicant(self, guild: discord.Guild, user_id: int, *, approved: bool, embassy_name: str) -> None:
+    """Notify the applicant privately about the final Embassy decision."""
+    try:
+        member = guild.get_member(user_id)
+        user = member or await self.bot.fetch_user(user_id)
+        if approved:
+            embed = discord.Embed(
+                title="🎉 Embassy Application Accepted",
+                description=(
+                    f"Your Embassy access application has been **approved**.\n\n"
+                    f"**Embassy:** {embassy_name}\n\n"
+                    "Your diplomatic access has been granted. Welcome, diplomat! 🏛️"
+                ),
+                color=discord.Color.green(),
+            )
+        else:
+            embed = discord.Embed(
+                title="❌ Embassy Application Declined",
+                description=(
+                    f"Your Embassy access application has been **declined**.\n\n"
+                    f"**Embassy:** {embassy_name}\n\n"
+                    "No Embassy access has been granted. If you believe this was a mistake, please contact EAM/Admin."
+                ),
+                color=discord.Color.red(),
+            )
+        embed.set_footer(text="Rajdoot • Embassy Access System")
+        await user.send(embed=embed)
+    except (discord.Forbidden, discord.HTTPException, discord.NotFound):
+        logger.info("Could not DM applicant %s about Embassy decision", user_id)
 
 
 async def _patched_notify_government(self, guild, request, embassy, *, revival: bool):
@@ -170,8 +225,10 @@ async def _patched_grant_access(self, guild, user_id: int, embassy, source: Acce
     await channel.send(
         content=eam_mention,
         embed=_welcome_embed(member, embassy, new_embassy=source is AccessSource.SPECIAL_OFFICIAL),
+        view=CuratedSurpriseView(),
         allowed_mentions=discord.AllowedMentions(users=True, roles=True),
     )
+    await _dm_applicant(self, guild, user_id, approved=True, embassy_name=embassy.country_name)
 
 
 async def _patched_handle_own_country(self, interaction, request):
