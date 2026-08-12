@@ -9,6 +9,11 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app ./app
+COPY core ./core
+COPY access ./access
+COPY approval ./approval
+COPY embassy ./embassy
+COPY migration ./migration
 COPY .env.example ./.env.example
 
 CMD ["python", "-m", "app"]
