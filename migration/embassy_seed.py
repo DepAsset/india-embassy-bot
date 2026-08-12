@@ -10,7 +10,9 @@ from core.database import Database
 from embassy.registry import Embassy, EmbassyRegistry
 from .snapshot import MigrationSnapshotService
 
-MIGRATION_ID = "legacy_embassy_channels_v1"
+# Bump this when the legacy Embassy mapping seed changes. MongoDB keeps the
+# previous migration record and the new version gets its own safety snapshot.
+MIGRATION_ID = "legacy_embassy_channels_v2"
 SEED_PATH = Path(__file__).resolve().parent.parent / "data" / "legacy_embassies.tsv"
 
 
