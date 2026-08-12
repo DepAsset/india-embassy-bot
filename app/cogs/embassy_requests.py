@@ -75,21 +75,21 @@ class CompanyVerificationView(discord.ui.View):
 
     WAITING_MESSAGES = (
         "🔎 **Checking your WarEra companies...**\n\nThe Embassy desk is looking for the company you just renamed.",
-        "📡 **Establishing a secure connection to WarEra...**\n\nPlease keep your diplomatic passport handy. 😄",
-        "🗂️ **Reviewing company records...**\n\nOur officers are checking the paperwork. No unnecessary bureaucracy, we promise.",
-        "🌍 **Cross-checking your diplomatic identity...**\n\nYour embassy request is travelling through the proper channels.",
-        "🤝 **Almost there...**\n\nEven diplomacy takes a few seconds. Thanks for your patience, diplomat!",
+        "📡 **Establishing a secure connection to WarEra...**\n\nPlease wait while the company records are fetched.",
+        "🗂️ **Reviewing company records...**\n\nThe bot is checking the companies you currently own.",
+        "🌍 **Cross-checking your diplomatic identity...**\n\nAlmost there.",
+        "🤝 **Almost there...**\n\nWarEra is being checked for the matching company name.",
     )
 
     def __init__(self, service: EmbassyRequestService) -> None:
         super().__init__(timeout=None)
         self.service = service
 
-    async def _animate_wait(self, interaction: discord.Interaction, stop: asyncio.Event) -> None:
+    async def _animate_wait(self, status_message: discord.Message, stop: asyncio.Event) -> None:
         index = 0
         while not stop.is_set():
             try:
-                await interaction.edit_original_response(content=self.WAITING_MESSAGES[index % len(self.WAITING_MESSAGES)])
+                await status_message.edit(content=self.WAITING_MESSAGES[index % len(self.WAITING_MESSAGES)])
             except (discord.HTTPException, discord.NotFound):
                 return
             index += 1
@@ -109,23 +109,39 @@ class CompanyVerificationView(discord.ui.View):
             await interaction.response.send_message("Only the applicant can verify this company.", ephemeral=True)
             return
 
-        # Disable the button immediately so the applicant cannot start two WarEra checks at once.
+        # The button belongs to interaction.message, not the interaction webhook
+        # response. Keeping these separate is important: otherwise a failed
+        # attempt leaves the visible Verify Company button permanently disabled.
         button.disabled = True
         await interaction.response.defer()
-        await interaction.message.edit(view=self)
+        try:
+            await interaction.message.edit(view=self)
+        except discord.HTTPException:
+            logger.exception("Could not disable company verification button for %s", request["request_id"])
 
+        # Progress messages are deliberately sent BELOW the verification embed.
+        # They must never replace or edit the WarEra Company Verification message.
+        status_message = await interaction.channel.send(self.WAITING_MESSAGES[0])
         stop_animation = asyncio.Event()
-        animation_task = asyncio.create_task(self._animate_wait(interaction, stop_animation))
+        animation_task = asyncio.create_task(self._animate_wait(status_message, stop_animation))
 
-        complete_cog = interaction.client.get_cog("CompleteEmbassyCog")
-        if complete_cog is None:
+        async def finish_status(content: str) -> None:
             stop_animation.set()
             animation_task.cancel()
             try:
                 await animation_task
             except asyncio.CancelledError:
                 pass
-            await interaction.edit_original_response(content="⚠️ The verification service is temporarily unavailable. Please try again later.")
+            try:
+                await status_message.edit(content=content)
+            except (discord.HTTPException, discord.NotFound):
+                pass
+
+        complete_cog = interaction.client.get_cog("CompleteEmbassyCog")
+        if complete_cog is None:
+            await finish_status("⚠️ **Verification service unavailable.** Please try again later.")
+            button.disabled = False
+            await interaction.message.edit(view=self)
             return
 
         try:
@@ -135,68 +151,48 @@ class CompanyVerificationView(discord.ui.View):
             )
         except WarEraAPIError:
             logger.exception("WarEra API error during company ownership verification for %s", request["request_id"])
-            stop_animation.set()
-            animation_task.cancel()
-            try:
-                await animation_task
-            except asyncio.CancelledError:
-                pass
-            await interaction.edit_original_response(content="⚠️ WarEra could not be checked right now. Please try again in a moment.")
+            await finish_status("⚠️ **WarEra could not be checked right now.** Your attempt was not consumed. Please try again in a moment.")
+            button.disabled = False
+            await interaction.message.edit(view=self)
             return
         except ValueError as exc:
-            stop_animation.set()
-            animation_task.cancel()
-            try:
-                await animation_task
-            except asyncio.CancelledError:
-                pass
-            await interaction.edit_original_response(content=f"⚠️ {exc}")
+            await finish_status(f"⚠️ {exc}")
+            button.disabled = False
+            await interaction.message.edit(view=self)
             return
         except Exception:
             logger.exception("Unexpected company ownership verification error for %s", request["request_id"])
-            stop_animation.set()
-            animation_task.cancel()
-            try:
-                await animation_task
-            except asyncio.CancelledError:
-                pass
-            await interaction.edit_original_response(content="⚠️ An unexpected verification error occurred. Please contact an administrator.")
+            await finish_status("⚠️ **An unexpected verification error occurred.** Please contact an administrator.")
+            button.disabled = False
+            await interaction.message.edit(view=self)
             return
 
-        stop_animation.set()
-        animation_task.cancel()
-        try:
-            await animation_task
-        except asyncio.CancelledError:
-            pass
-
         if verified:
-            await interaction.edit_original_response(
-                content=(
-                    "✅ **WarEra Verification Complete**\n\n"
-                    "Your WarEra identity and company ownership have been verified.\n\n"
-                    "Your request can now proceed to embassy access review."
-                )
+            await finish_status(
+                "✅ **WarEra Verification Complete**\n\n"
+                "Your WarEra identity and company ownership have been verified.\n\n"
+                "Your request can now proceed to Embassy access review."
             )
+            # Successful verification is terminal for this button.
             return
 
         if lock_until is not None:
-            await interaction.edit_original_response(
-                content=(
-                    f"🔒 **Verification locked.** You have used all **5 attempts**. "
-                    f"Try again after <t:{int(lock_until.timestamp())}:R>."
-                )
+            await finish_status(
+                f"🔒 **Verification locked.** You have used all **5 attempts**. "
+                f"Try again after <t:{int(lock_until.timestamp())}:R>."
             )
+            # The service will allow the same request to continue after the lock
+            # expires; keep the button disabled while it is genuinely locked.
             return
 
-        # Re-enable the button after a normal failed attempt so the applicant can retry.
+        # Normal failed attempt: re-enable the ORIGINAL button on the ORIGINAL
+        # WarEra Company Verification embed. This makes attempt 2/5, 3/5, etc.
+        # immediately usable without recreating the request.
         button.disabled = False
         await interaction.message.edit(view=self)
-        await interaction.edit_original_response(
-            content=(
-                f"❌ **Company OTP not found.** Attempt **{attempts}/5**.\n\n"
-                "Rename one of your owned WarEra companies to the OTP shown above, wait a few seconds, and click **Verify Company** again."
-            )
+        await finish_status(
+            f"❌ **Company OTP not found.** Attempt **{attempts}/5**.\n\n"
+            "Rename one of your owned WarEra companies to the OTP shown in the verification message, wait a few seconds, and click **Verify Company** again."
         )
 
 
@@ -257,7 +253,9 @@ class VerificationStartView(discord.ui.View):
             description=(
                 "Your WarEra identity has been resolved. Now create or rename one of your **owned companies** so its exact name matches the OTP below.\n\n"
                 f"**Player:** {profile.username}\n**Country:** {profile.country_name}\n**Official status:** {official_text}\n\n"
-                f"**Your OTP:** `{otp}`\n\n"
+                "**Your OTP:**\n"
+                f"```{otp}```\n\n"
+                "Use the code-block copy control in Discord to copy the OTP.\n\n"
                 "Once the company name matches the OTP, click **Verify Company**. The bot will discover your company IDs with `company.getCompanies` and resolve every company through `company.getById` before accepting the match."
             ),
             color=discord.Color.blurple(),
