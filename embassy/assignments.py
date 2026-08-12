@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from uuid import uuid4
 
+from pymongo.errors import DuplicateKeyError
+
 from core.database import Database
 from core.state import AssignmentStatus, AssignmentType
 
@@ -57,18 +59,30 @@ class AssignmentService:
             return str(existing["assignment_id"]), False
 
         assignment_id = str(uuid4())
-        await self.collection.insert_one(
-            {
-                "assignment_id": assignment_id,
-                "discord_user_id": discord_user_id,
-                "embassy_id": embassy_id,
-                "assignment_type": assignment_type.value,
-                "status": AssignmentStatus.ACTIVE.value,
-                "assigned_by": assigned_by,
-                "assigned_at": utcnow(),
-                "source": source,
-            }
-        )
+        document = {
+            "assignment_id": assignment_id,
+            "discord_user_id": discord_user_id,
+            "embassy_id": embassy_id,
+            "assignment_type": assignment_type.value,
+            "status": AssignmentStatus.ACTIVE.value,
+            "assigned_by": assigned_by,
+            "assigned_at": utcnow(),
+            "source": source,
+        }
+        try:
+            await self.collection.insert_one(document)
+        except DuplicateKeyError:
+            # Another worker won the race between our read and insert.
+            winner = await self.collection.find_one(
+                {
+                    "discord_user_id": discord_user_id,
+                    "embassy_id": embassy_id,
+                    "status": AssignmentStatus.ACTIVE.value,
+                }
+            )
+            if winner is None:
+                raise
+            return str(winner["assignment_id"]), False
         return assignment_id, True
 
     async def revoke(
