@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     mongodb_uri: str
     mongodb_database: str
     warera_api_base: str
+    warera_api_profile_path: str = "/trpc/user.getUserLite"
 
     health_host: str = "0.0.0.0"
     health_port: int = 10000
