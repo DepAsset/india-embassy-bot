@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import logging
 import random
+import uuid
 from datetime import datetime, timezone
 
 import discord
 
 from app.config import settings
 from app.cogs.embassy_flow import EmbassyFlow
-from approval.workflow import Route
+from approval.workflow import Decision, Route
 from access.models import AccessSource, AssignmentType
 from access.discord import DiscordAccessProvisioner
 
@@ -29,22 +30,97 @@ KLIPY_SURPRISE_URL = "https://klipy.com/gifs/rickroll-never-gonna-give-you-up-9"
 
 
 class CuratedSurpriseView(discord.ui.View):
-    """Persistent surprise button attached to Embassy welcome messages."""
+    """One-use surprise button that only the newly accepted diplomat can trigger."""
 
+    def __init__(self, bot: discord.Client, token: str, recipient_id: int):
+        super().__init__(timeout=None)
+        self.bot = bot
+        self.token = token
+        self.recipient_id = int(recipient_id)
+
+        button = discord.ui.Button(
+            label="Open This If You Dare",
+            emoji="☠️",
+            style=discord.ButtonStyle.danger,
+            custom_id=f"embassy:surprise:{token}",
+        )
+        button.callback = self._surprise
+        self.add_item(button)
+
+    async def _surprise(self, interaction: discord.Interaction) -> None:
+        if interaction.user.id != self.recipient_id:
+            await interaction.response.send_message(
+                "☠️ Nice try. This little surprise was curated for someone else.",
+                ephemeral=True,
+            )
+            return
+
+        result = await self.bot.database.collection("embassy_surprises").update_one(
+            {"token": self.token, "recipient_id": self.recipient_id, "used": False},
+            {"$set": {"used": True, "used_at": datetime.now(timezone.utc)}},
+        )
+        if getattr(result, "modified_count", 0) != 1:
+            await interaction.response.send_message(
+                "☠️ The surprise has already been claimed. There are no second chances.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.defer()
+        try:
+            if interaction.message:
+                await interaction.message.edit(view=_DisabledSurpriseView())
+        except discord.HTTPException:
+            logger.info("Could not disable claimed surprise button")
+        await interaction.channel.send(KLIPY_SURPRISE_URL)
+
+
+class _DisabledSurpriseView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
+        button = discord.ui.Button(
+            label="Surprise Claimed",
+            emoji="🎁",
+            style=discord.ButtonStyle.secondary,
+            disabled=True,
+            custom_id="embassy:surprise:claimed",
+        )
+        self.add_item(button)
 
-    @discord.ui.button(
-        label="Click for a specially curated surprise for you",
-        emoji="🎁",
-        style=discord.ButtonStyle.primary,
-        custom_id="embassy:curated-surprise",
+
+async def _send_welcome_with_surprise(self, guild: discord.Guild, member: discord.Member, channel: discord.TextChannel, embassy, *, new_embassy: bool) -> None:
+    token = uuid.uuid4().hex
+    await self.bot.database.collection("embassy_surprises").insert_one({
+        "token": token,
+        "recipient_id": member.id,
+        "embassy_id": embassy.embassy_id,
+        "used": False,
+        "created_at": datetime.now(timezone.utc),
+    })
+
+    # Ghost ping: Discord sends the notification, then the visible ping is removed.
+    try:
+        ghost = await channel.send(
+            member.mention,
+            allowed_mentions=discord.AllowedMentions(users=True),
+        )
+        await ghost.delete()
+    except discord.HTTPException:
+        logger.info("Could not send/delete welcome ghost ping for %s", member.id)
+
+    eam_role = guild.get_role(settings.role_eam_id)
+    eam_mention = eam_role.mention if eam_role else None
+    view = CuratedSurpriseView(self.bot, token, member.id)
+    message = await channel.send(
+        content=eam_mention,
+        embed=_welcome_embed(member, embassy, new_embassy=new_embassy),
+        view=view,
+        allowed_mentions=discord.AllowedMentions(users=False, roles=True),
     )
-    async def surprise(self, interaction: discord.Interaction, _: discord.ui.Button):
-        # Post the requested GIF page URL into the Embassy chat so Discord can
-        # unfurl it for everyone in the Embassy channel.
-        await interaction.response.send_message("🎁 Your specially curated surprise has arrived!")
-        await interaction.channel.send(KLIPY_SURPRISE_URL)
+    try:
+        self.bot.add_view(view, message_id=message.id)
+    except Exception:
+        logger.exception("Unable to register Embassy surprise view")
 
 
 def _role_mentions(guild: discord.Guild) -> str:
@@ -220,15 +296,33 @@ async def _patched_grant_access(self, guild, user_id: int, embassy, source: Acce
     if role:
         await provisioner.ensure_role(member, role, reason="User received Embassy access")
 
-    eam_role = guild.get_role(settings.role_eam_id)
-    eam_mention = eam_role.mention if eam_role else None
-    await channel.send(
-        content=eam_mention,
-        embed=_welcome_embed(member, embassy, new_embassy=source is AccessSource.SPECIAL_OFFICIAL),
-        view=CuratedSurpriseView(),
-        allowed_mentions=discord.AllowedMentions(users=True, roles=True),
+    await _send_welcome_with_surprise(
+        self,
+        guild,
+        member,
+        channel,
+        embassy,
+        new_embassy=source is AccessSource.SPECIAL_OFFICIAL,
     )
     await _dm_applicant(self, guild, user_id, approved=True, embassy_name=embassy.country_name)
+
+
+# Rejection DM is handled here because the original decision flow closes the
+# request after recording the decision. Capture the request/Embassy first.
+_original_decide_for_dm = EmbassyFlow.decide
+
+
+async def _decide_with_rejection_dm(self, interaction, request_id, decision, route):
+    request = await self.db.collection("requests").find_one({"request_id": request_id, "active": True})
+    embassy_name = "the requested Embassy"
+    if request:
+        embassy = await self.registry.get_by_id(str(request.get("requested_embassy_id") or ""))
+        if embassy:
+            embassy_name = embassy.country_name
+    result = await _original_decide_for_dm(self, interaction, request_id, decision, route)
+    if decision is Decision.DECLINED and request:
+        await _dm_applicant(self, interaction.guild, int(request["discord_user_id"]), approved=False, embassy_name=embassy_name)
+    return result
 
 
 async def _patched_handle_own_country(self, interaction, request):
@@ -258,3 +352,4 @@ EmbassyFlow._finalize_direct = _patched_finalize_direct
 EmbassyFlow._log_channel = _patched_log_channel
 EmbassyFlow._grant_access = _patched_grant_access
 EmbassyFlow._handle_own_country = _patched_handle_own_country
+EmbassyFlow.decide = _decide_with_rejection_dm
