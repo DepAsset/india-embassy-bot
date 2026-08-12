@@ -32,6 +32,7 @@ class EmbassyBot(commands.Bot):
 
         await self.load_extension("app.cogs.complete")
         await self.load_extension("app.cogs.embassy_requests")
+        await self.load_extension("app.cogs.post_verification")
         await self.load_extension("app.cogs.recovery")
 
         guild = discord.Object(id=settings.discord_guild_id)
