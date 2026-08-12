@@ -164,9 +164,13 @@ async def _patched_grant_access(self, guild, user_id: int, embassy, source: Acce
     role = guild.get_role(settings.role_foreign_diplomat_id)
     if role:
         await provisioner.ensure_role(member, role, reason="User received Embassy access")
+
+    eam_role = guild.get_role(settings.role_eam_id)
+    eam_mention = eam_role.mention if eam_role else None
     await channel.send(
+        content=eam_mention,
         embed=_welcome_embed(member, embassy, new_embassy=source is AccessSource.SPECIAL_OFFICIAL),
-        allowed_mentions=discord.AllowedMentions(users=True),
+        allowed_mentions=discord.AllowedMentions(users=True, roles=True),
     )
 
 
