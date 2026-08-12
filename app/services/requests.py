@@ -7,6 +7,22 @@ import discord
 from core.audit import AuditLogger
 from core.database import Database
 from core.repositories import RequestRepository
+from core.state import RequestState
+
+
+ACTIVE_REQUEST_STATES = {
+    RequestState.SUBMITTED.value,
+    RequestState.PROFILE_RESOLVED.value,
+    RequestState.OTP_PENDING.value,
+    RequestState.OTP_LOCKED.value,
+    RequestState.VERIFIED.value,
+    RequestState.EMBASSY_SELECTION.value,
+    RequestState.DIPLOMAT_REVIEW.value,
+    RequestState.GOVERNMENT_REVIEW.value,
+    RequestState.PREAPPROVED.value,
+    RequestState.AUTO_APPROVED.value,
+    RequestState.RECOVERY_PENDING.value,
+}
 
 
 class EmbassyRequestService:
@@ -17,15 +33,35 @@ class EmbassyRequestService:
     """
 
     def __init__(self, database: Database) -> None:
+        self.database = database
         self.requests = RequestRepository(database)
         self.audit = AuditLogger(database)
+
+    async def find_active_for_user(self, discord_user_id: int) -> dict | None:
+        return await self.database.collection("requests").find_one(
+            {"discord_user_id": discord_user_id, "state": {"$in": list(ACTIVE_REQUEST_STATES)}},
+            sort=[("created_at", -1)],
+        )
 
     async def create_private_request(
         self,
         *,
         channel: discord.TextChannel,
         applicant: discord.Member,
-    ) -> tuple[str, discord.Thread]:
+    ) -> tuple[str, discord.Thread, bool]:
+        existing = await self.find_active_for_user(applicant.id)
+        if existing:
+            thread = channel.guild.get_thread(existing["thread_id"])
+            if thread is not None:
+                return str(existing["request_id"]), thread, False
+            await self.audit.log(
+                action="REQUEST_THREAD_MISSING",
+                actor_id=applicant.id,
+                request_id=str(existing["request_id"]),
+                target_id=str(applicant.id),
+                metadata={"old_thread_id": existing["thread_id"]},
+            )
+
         request_id = str(uuid4())
         thread = await channel.create_thread(
             name=f"embassy-request-{applicant.id}",
@@ -46,4 +82,4 @@ class EmbassyRequestService:
             target_id=str(applicant.id),
             metadata={"thread_id": thread.id, "channel_id": channel.id},
         )
-        return request_id, thread
+        return request_id, thread, True
