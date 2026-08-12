@@ -27,6 +27,7 @@ class EmbassyBot(commands.Bot):
         await self.database.initialize()
         self.health_runner = await start_health_server(settings.health_host, settings.health_port)
         await self.load_extension("app.cogs.complete")
+        await self.load_extension("app.cogs.recovery")
         guild = discord.Object(id=settings.discord_guild_id)
         self.tree.copy_global_to(guild=guild)
         await self.tree.sync(guild=guild)
