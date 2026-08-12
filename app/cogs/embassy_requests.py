@@ -53,6 +53,11 @@ class WarEraProfileModal(discord.ui.Modal, title="Embassy Verification"):
                 )
                 return
 
+            await self.service.database.collection("requests").update_one(
+                {"request_id": request_id},
+                {"$set": {"profile_input": self.profile.value.strip()}},
+            )
+
             await interaction.response.send_message(
                 f"Your private Embassy request has been created: {thread.mention}",
                 ephemeral=True,
@@ -64,9 +69,9 @@ class WarEraProfileModal(discord.ui.Modal, title="Embassy Verification"):
                     description=(
                         "Your request has been created successfully.\n\n"
                         "**WarEra Profile:**\n"
-                        f"`{self.profile.value}`\n\n"
-                        "The bot will use this profile/ID to resolve your canonical WarEra identity "
-                        "before continuing with OTP verification."
+                        f"`{self.profile.value.strip()}`\n\n"
+                        "The profile has been captured. The next stage will resolve your canonical "
+                        "WarEra identity and begin OTP verification."
                     ),
                     color=discord.Color.dark_red(),
                 ),
@@ -101,12 +106,7 @@ class RequestPanelView(discord.ui.View):
 
 
 class VerificationStartView(discord.ui.View):
-    """Persistent placeholder for the next verification slice.
-
-    The profile has already been captured into the private request thread.
-    The next implementation slice wires this action to the concrete WarEra
-    API adapter and OTP issuance service.
-    """
+    """Persistent bridge to the WarEra profile/OTP implementation slice."""
 
     def __init__(self, request_id: str) -> None:
         super().__init__(timeout=None)
@@ -120,7 +120,7 @@ class VerificationStartView(discord.ui.View):
     )
     async def continue_verification(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         await interaction.response.send_message(
-            "Your profile is captured. WarEra profile resolution and OTP verification are being connected next.",
+            "Your profile is captured. WarEra profile resolution and OTP verification are the next implementation stage.",
             ephemeral=True,
         )
 
@@ -156,7 +156,7 @@ class EmbassyRequestsCog(commands.Cog):
                 description=(
                     "Need access to an Embassy? Click the button below to begin.\n\n"
                     "You will first provide your **WarEra profile link or ID**. "
-                    "The bot will then create a private request thread for the rest of the verification process."
+                    "The bot will then create a private request thread for the verification process."
                 ),
                 color=discord.Color.dark_red(),
             ),
