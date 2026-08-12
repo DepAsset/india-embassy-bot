@@ -103,6 +103,20 @@ class WarEraHTTPClient(WarEraClient):
     async def _get_government(self, country_id: str) -> dict[str, Any]:
         return self._object(await self._post(self.government_by_country_endpoint, {"countryId": country_id}))
 
+    @staticmethod
+    def _has_current_office(infos: Any, field: str, country_id: str) -> bool:
+        """Check the authoritative office marker returned in user.infos.
+
+        WarEra stores current government offices directly on the user object:
+        `presidentOf`, `vicePresidentOf`, and `minOfForeignAffairsOf` contain
+        the country ID for the office held by that user. This is more reliable
+        than trying to infer offices from generic role/title text.
+        """
+        if not isinstance(infos, dict):
+            return False
+        office_country = infos.get(field)
+        return bool(office_country) and str(office_country) == country_id
+
     async def get_profile(self, profile_or_id: str) -> WarEraProfile:
         user_id = self.normalize_user_input(profile_or_id)
         data = await self._get_user(user_id)
@@ -116,18 +130,15 @@ class WarEraHTTPClient(WarEraClient):
         country = country_data.get("country") if isinstance(country_data.get("country"), dict) else country_data
         country_name = str(country.get("name") or country.get("countryName") or country_id)
 
-        government_data = await self._get_government(country_id)
-        government = government_data.get("government") if isinstance(government_data.get("government"), dict) else government_data
-
-        def role_text(obj: Any) -> str:
-            if not isinstance(obj, dict):
-                return ""
-            values = [obj.get("role"), obj.get("title"), obj.get("position"), obj.get("type")]
-            return " ".join(str(value).lower() for value in values if value)
-
-        gov_text = role_text(government)
-        user_text = role_text(data)
-        roles = {str(value).lower() for value in (data.get("roles") or []) if isinstance(value, (str, int))}
+        # The `infos` object in user.getUserById is the authoritative source
+        # for current government offices. Examples from the API:
+        #   infos.presidentOf = <countryId>
+        #   infos.vicePresidentOf = <countryId>
+        #   infos.minOfForeignAffairsOf = <countryId>
+        infos = data.get("infos")
+        is_president = self._has_current_office(infos, "presidentOf", country_id)
+        is_vice_president = self._has_current_office(infos, "vicePresidentOf", country_id)
+        is_eam_or_mofa = self._has_current_office(infos, "minOfForeignAffairsOf", country_id)
 
         return WarEraProfile(
             user_id=canonical_id,
@@ -135,9 +146,9 @@ class WarEraHTTPClient(WarEraClient):
             username=str(data.get("username") or data.get("name") or canonical_id),
             country_id=country_id,
             country_name=country_name,
-            is_president=bool(data.get("isPresident") or "president" in roles or "president" in user_text or "president" in gov_text),
-            is_vice_president=bool(data.get("isVicePresident") or "vice president" in roles or "vice_president" in roles or "vice president" in user_text),
-            is_eam_or_mofa=bool(data.get("isEamOrMofa") or data.get("isForeignMinister") or "eam" in roles or "foreign minister" in roles or "mofa" in roles or "foreign affairs" in gov_text),
+            is_president=is_president,
+            is_vice_president=is_vice_president,
+            is_eam_or_mofa=is_eam_or_mofa,
         )
 
     async def get_companies(self, user_id: str) -> list[WarEraCompany]:
