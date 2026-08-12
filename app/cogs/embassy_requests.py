@@ -8,6 +8,8 @@ from discord.ext import commands
 
 from app.config import settings
 from app.services.requests import EmbassyRequestService
+from verification.service import VerificationService
+from verification.warera import WarEraApiError, WarEraHttpClient
 
 logger = logging.getLogger(__name__)
 
@@ -15,7 +17,7 @@ logger = logging.getLogger(__name__)
 class WarEraProfileModal(discord.ui.Modal, title="Embassy Verification"):
     profile = discord.ui.TextInput(
         label="WarEra Profile Link or ID",
-        placeholder="https://warera.io/profile/... or your WarEra User ID",
+        placeholder="https://app.warera.io/user/... or your WarEra User ID",
         min_length=1,
         max_length=200,
         required=True,
@@ -70,12 +72,12 @@ class WarEraProfileModal(discord.ui.Modal, title="Embassy Verification"):
                         "Your request has been created successfully.\n\n"
                         "**WarEra Profile:**\n"
                         f"`{self.profile.value.strip()}`\n\n"
-                        "The profile has been captured. The next stage will resolve your canonical "
-                        "WarEra identity and begin OTP verification."
+                        "The profile has been captured. Click **Continue Verification** to resolve your "
+                        "canonical WarEra identity and generate the ownership OTP."
                     ),
                     color=discord.Color.dark_red(),
                 ),
-                view=VerificationStartView(self.service),
+                view=VerificationStartView(self.service, self.service.database),
             )
         except discord.Forbidden:
             await interaction.response.send_message(
@@ -105,12 +107,104 @@ class RequestPanelView(discord.ui.View):
         await interaction.response.send_modal(WarEraProfileModal(self.service))
 
 
-class VerificationStartView(discord.ui.View):
-    """Persistent bridge to the WarEra profile/OTP implementation slice."""
+class CompanyVerificationView(discord.ui.View):
+    """One-click live company ownership check."""
 
-    def __init__(self, service: EmbassyRequestService) -> None:
+    def __init__(self, service: EmbassyRequestService, database, user_id: int, warera_user_id: str, otp: str) -> None:
+        super().__init__(timeout=None)
+        self.service = VerificationService(database)
+        self.user_id = user_id
+        self.warera_user_id = warera_user_id
+        self.otp = otp
+
+    @discord.ui.button(
+        label="Verify Company",
+        style=discord.ButtonStyle.success,
+        emoji="🔍",
+        custom_id="embassy:verify-company",
+    )
+    async def verify_company(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message(
+                "Only the applicant can use this verification button.",
+                ephemeral=True,
+            )
+            return
+
+        # A Discord component interaction must be acknowledged immediately.
+        # The old implementation waited for the WarEra API before responding,
+        # which caused the "didn't respond in time" error in the screenshot.
+        await interaction.response.defer()
+
+        client = getattr(interaction.client, "warera", None)
+        if not isinstance(client, WarEraHttpClient):
+            await interaction.followup.send(
+                "The WarEra API client is not available. Please contact an administrator.",
+                ephemeral=True,
+            )
+            return
+
+        try:
+            verified, attempts, lock_until, _ = await self.service.verify_company_ownership(
+                self._request_id(interaction),
+                self.warera_user_id,
+                client,
+            )
+        except WarEraApiError as exc:
+            logger.exception("WarEra company verification failed")
+            await interaction.followup.send(
+                f"⚠️ WarEra could not be checked right now. Please try again in a moment.\n`{exc}`",
+                ephemeral=True,
+            )
+            return
+        except Exception:
+            logger.exception("Unexpected embassy company verification error")
+            await interaction.followup.send(
+                "⚠️ An unexpected verification error occurred. Please contact an administrator.",
+                ephemeral=True,
+            )
+            return
+
+        if verified:
+            button.disabled = True
+            await interaction.message.edit(view=self)
+            await interaction.followup.send(
+                "✅ **WarEra Verification Complete**\n\n"
+                "Your WarEra identity and company ownership have been verified.\n\n"
+                "Your request can now proceed to embassy access review."
+            )
+            return
+
+        if lock_until is not None:
+            button.disabled = True
+            await interaction.message.edit(view=self)
+            await interaction.followup.send(
+                f"🔒 **Verification locked.** You have used all **5 attempts**. "
+                f"Try again after <t:{int(lock_until.timestamp())}:R>."
+            )
+            return
+
+        await interaction.followup.send(
+            f"❌ **Company OTP not found.** Attempt **{attempts}/5**.\n\n"
+            f"Rename one of your owned WarEra companies to **`{self.otp}`**, wait a few seconds, and click **Verify Company** again."
+        )
+
+    @staticmethod
+    def _request_id(interaction: discord.Interaction) -> str:
+        # The request ID is stored on the persistent thread record. The view
+        # does not trust message text for correlation.
+        if not isinstance(interaction.channel, discord.Thread):
+            raise ValueError("Verification must be used inside a request thread")
+        return str(interaction.channel.id)
+
+
+class VerificationStartView(discord.ui.View):
+    """Persistent bridge from profile capture to live OTP verification."""
+
+    def __init__(self, service: EmbassyRequestService, database) -> None:
         super().__init__(timeout=None)
         self.service = service
+        self.database = database
 
     @discord.ui.button(
         label="Continue Verification",
@@ -120,20 +214,87 @@ class VerificationStartView(discord.ui.View):
     )
     async def continue_verification(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         if not isinstance(interaction.channel, discord.Thread):
-            await interaction.response.send_message("This verification control must be used inside your request thread.", ephemeral=True)
+            await interaction.response.send_message(
+                "This verification control must be used inside your request thread.",
+                ephemeral=True,
+            )
             return
 
-        request = await self.service.database.collection("requests").find_one({"thread_id": interaction.channel.id})
+        request = await self.database.collection("requests").find_one({"thread_id": interaction.channel.id})
         if not request:
-            await interaction.response.send_message("This request could not be found. Please contact an administrator.", ephemeral=True)
+            await interaction.response.send_message(
+                "This request could not be found. Please contact an administrator.",
+                ephemeral=True,
+            )
             return
         if request.get("discord_user_id") != interaction.user.id:
-            await interaction.response.send_message("Only the applicant can continue this verification.", ephemeral=True)
+            await interaction.response.send_message(
+                "Only the applicant can continue this verification.",
+                ephemeral=True,
+            )
             return
 
-        await interaction.response.send_message(
-            "Your profile is captured. WarEra profile resolution and OTP verification are the next implementation stage.",
-            ephemeral=True,
+        profile_input = str(request.get("profile_input", "")).strip()
+        client = getattr(interaction.client, "warera", None)
+        if not isinstance(client, WarEraHttpClient):
+            await interaction.response.send_message(
+                "The WarEra API client is not available. Please contact an administrator.",
+                ephemeral=True,
+            )
+            return
+
+        # Acknowledge before making the external API call.
+        await interaction.response.defer()
+        verifier = VerificationService(self.database)
+
+        try:
+            profile = await client.get_profile(profile_input)
+            otp = await verifier.issue_otp(str(request["request_id"]))
+            await self.database.collection("requests").update_one(
+                {"request_id": request["request_id"]},
+                {
+                    "$set": {
+                        "warera_user_id": profile.user_id,
+                        "verified_country_id": profile.country_id,
+                    }
+                },
+            )
+        except (WarEraApiError, ValueError) as exc:
+            await interaction.followup.send(
+                f"⚠️ I could not resolve that WarEra profile. Please check the profile link/ID and try again.\n`{exc}`",
+                ephemeral=True,
+            )
+            return
+        except Exception:
+            logger.exception("Unexpected WarEra profile resolution error")
+            await interaction.followup.send(
+                "⚠️ WarEra profile resolution failed unexpectedly. Please contact an administrator.",
+                ephemeral=True,
+            )
+            return
+
+        embed = discord.Embed(
+            title="🔐 WarEra Company Verification",
+            description=(
+                f"**Player:** {interaction.user.display_name}\n"
+                f"**Country:** {profile.country_name}\n"
+                f"**WarEra ID:** `{profile.user_id}`\n\n"
+                "Create or rename one of your **owned WarEra companies** so its exact name matches the OTP below.\n\n"
+                f"**Your OTP:** `{otp}`\n\n"
+                "Once the company name matches, click **Verify Company**. "
+                "The bot will query your current companies and compare their names automatically."
+            ),
+            color=discord.Color.blurple(),
+        )
+        await interaction.followup.send(
+            embed=embed,
+            view=CompanyVerificationView(
+                self.service,
+                self.database,
+                interaction.user.id,
+                profile.user_id,
+                otp,
+            ),
         )
 
 
@@ -144,7 +305,7 @@ class EmbassyRequestsCog(commands.Cog):
 
     async def cog_load(self) -> None:
         self.bot.add_view(RequestPanelView(self.service))
-        self.bot.add_view(VerificationStartView(self.service))
+        self.bot.add_view(VerificationStartView(self.service, self.bot.database))
 
     @app_commands.command(name="embassy-setup", description="Install or refresh the Embassy request panel.")
     async def embassy_setup(self, interaction: discord.Interaction) -> None:
