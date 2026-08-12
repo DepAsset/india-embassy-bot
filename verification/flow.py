@@ -11,11 +11,7 @@ from .warera import WarEraClient, WarEraProfile
 
 
 class VerificationFlow:
-    """Durable verification state machine.
-
-    OTP is verified by checking whether the generated code appears as a current
-    company name on the applicant's WarEra account. The raw OTP is never stored.
-    """
+    """Durable WarEra identity and company-rename verification state machine."""
 
     def __init__(self, database: Database, warera: WarEraClient) -> None:
         self.db = database
@@ -57,7 +53,6 @@ class VerificationFlow:
             {"$set": {
                 "request_id": request_id,
                 "otp_hash": digest_otp(otp),
-                "display_otp": otp,
                 "attempts": 0,
                 "lock_until": None,
                 "issued_at": now,
@@ -80,22 +75,26 @@ class VerificationFlow:
         if lock_until and lock_until > now:
             return False, int(record.get("attempts", 0)), lock_until
 
-        # The candidate is intentionally accepted only when the exact normalized
-        # OTP appears in the current company-name list returned by WarEra.
-        expected = str(record.get("display_otp") or "").strip().upper()
         supplied = re.sub(r"\s+", "", candidate.strip().upper())
+        if digest_otp(supplied) != record.get("otp_hash"):
+            attempts, locked, new_lock = register_failure(int(record.get("attempts", 0)))
+            await self.otp.update_one({"request_id": request_id}, {"$set": {"attempts": attempts, "lock_until": new_lock, "state": "locked" if locked else "otp_pending", "updated_at": now}})
+            if locked:
+                await self.requests.update_one({"request_id": request_id}, {"$set": {"state": RequestState.OTP_LOCKED.value, "updated_at": now}})
+            await self.audit.log(action="OTP_FAILED", actor_id=actor_id, request_id=request_id, warera_id=str(request["warera_user_id"]), metadata={"attempts": attempts, "locked": locked})
+            return False, attempts, new_lock
+
         company_names = await self.warera.get_company_names(str(request["warera_user_id"]))
         normalized_companies = {re.sub(r"\s+", "", name.strip().upper()) for name in company_names}
-        success = supplied == expected and expected in normalized_companies
-        if success:
-            await self.otp.update_one({"request_id": request_id}, {"$set": {"state": "verified", "verified_at": now, "updated_at": now}, "$unset": {"display_otp": ""}})
-            await self.requests.update_one({"request_id": request_id}, {"$set": {"state": RequestState.VERIFIED.value, "updated_at": now, "verification_completed_at": now}})
-            await self.audit.log(action="OTP_VERIFIED", actor_id=actor_id, request_id=request_id, warera_id=str(request["warera_user_id"]), new_state=RequestState.VERIFIED.value)
-            return True, int(record.get("attempts", 0)), None
+        if supplied not in normalized_companies:
+            attempts, locked, new_lock = register_failure(int(record.get("attempts", 0)))
+            await self.otp.update_one({"request_id": request_id}, {"$set": {"attempts": attempts, "lock_until": new_lock, "state": "locked" if locked else "otp_pending", "updated_at": now}})
+            if locked:
+                await self.requests.update_one({"request_id": request_id}, {"$set": {"state": RequestState.OTP_LOCKED.value, "updated_at": now}})
+            await self.audit.log(action="OTP_COMPANY_CHECK_FAILED", actor_id=actor_id, request_id=request_id, warera_id=str(request["warera_user_id"]), metadata={"attempts": attempts, "locked": locked})
+            return False, attempts, new_lock
 
-        attempts, locked, new_lock = register_failure(int(record.get("attempts", 0)))
-        await self.otp.update_one({"request_id": request_id}, {"$set": {"attempts": attempts, "lock_until": new_lock, "state": "locked" if locked else "otp_pending", "updated_at": now}})
-        if locked:
-            await self.requests.update_one({"request_id": request_id}, {"$set": {"state": RequestState.OTP_LOCKED.value, "updated_at": now}})
-        await self.audit.log(action="OTP_FAILED", actor_id=actor_id, request_id=request_id, warera_id=str(request["warera_user_id"]), metadata={"attempts": attempts, "locked": locked})
-        return False, attempts, new_lock
+        await self.otp.update_one({"request_id": request_id}, {"$set": {"state": "verified", "verified_at": now, "updated_at": now}})
+        await self.requests.update_one({"request_id": request_id}, {"$set": {"state": RequestState.VERIFIED.value, "updated_at": now, "verification_completed_at": now}})
+        await self.audit.log(action="OTP_VERIFIED", actor_id=actor_id, request_id=request_id, warera_id=str(request["warera_user_id"]), new_state=RequestState.VERIFIED.value)
+        return True, int(record.get("attempts", 0)), None
