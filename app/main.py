@@ -6,11 +6,9 @@ from discord.ext import commands
 
 from .config import settings
 from .health import start_health_server
+from core.database import Database
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
 logger = logging.getLogger("india-embassy-bot")
 
 
@@ -23,13 +21,13 @@ class EmbassyBot(commands.Bot):
         intents.message_content = True
         super().__init__(command_prefix="!", intents=intents)
         self.health_runner = None
+        self.database = Database(settings.mongodb_uri, settings.mongodb_database)
 
     async def setup_hook(self) -> None:
-        self.health_runner = await start_health_server(
-            settings.health_host,
-            settings.health_port,
-        )
-        # Feature cogs/services will be loaded here as they are implemented.
+        await self.database.initialize()
+        self.health_runner = await start_health_server(settings.health_host, settings.health_port)
+        await self.load_extension("app.cogs.embassy_requests")
+        logger.info("Embassy request and dashboard services loaded")
 
     async def on_ready(self) -> None:
         logger.info("Logged in as %s", self.user)
@@ -42,6 +40,7 @@ class EmbassyBot(commands.Bot):
     async def close(self) -> None:
         if self.health_runner is not None:
             await self.health_runner.cleanup()
+        await self.database.close()
         await super().close()
 
 
