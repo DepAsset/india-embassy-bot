@@ -4,11 +4,45 @@ import discord
 
 from app.cogs.embassy_flow import EmbassyFlow, EmbassyApprovalView
 from app.cogs.embassy_requests import CompanyVerificationView
+from verification.flow import VerificationFlow
 
 
 # Keep the OTP available only while verification is pending. The Copy OTP
 # button reveals it ephemerally in a Discord code block; Discord bots cannot
 # directly write to a user's device clipboard.
+_original_issue_otp = VerificationFlow.issue_company_otp
+_original_verify_ownership = VerificationFlow.verify_company_ownership
+_original_verify_otp = VerificationFlow.verify_company_otp
+
+
+async def _issue_otp_with_copy_value(self, request_id: str, actor_id: int) -> str:
+    otp = await _original_issue_otp(self, request_id, actor_id)
+    await self.otp.update_one(
+        {"request_id": request_id},
+        {"$set": {"otp_plaintext": otp}},
+    )
+    return otp
+
+
+async def _verify_ownership_and_clear(self, request_id: str, actor_id: int):
+    result = await _original_verify_ownership(self, request_id, actor_id)
+    if result[0]:
+        await self.otp.update_one({"request_id": request_id}, {"$unset": {"otp_plaintext": ""}})
+    return result
+
+
+async def _verify_otp_and_clear(self, request_id: str, candidate: str, actor_id: int):
+    result = await _original_verify_otp(self, request_id, candidate, actor_id)
+    if result[0]:
+        await self.otp.update_one({"request_id": request_id}, {"$unset": {"otp_plaintext": ""}})
+    return result
+
+
+VerificationFlow.issue_company_otp = _issue_otp_with_copy_value
+VerificationFlow.verify_company_ownership = _verify_ownership_and_clear
+VerificationFlow.verify_company_otp = _verify_otp_and_clear
+
+
 _original_company_view_init = CompanyVerificationView.__init__
 
 
@@ -65,9 +99,6 @@ EmbassyFlow.decide = _guarded_decide
 
 # Do not send an Embassy approval request to the applicant themselves when
 # they already happen to be an active diplomat of that Embassy.
-_original_notify_diplomats = EmbassyFlow._notify_diplomats
-
-
 async def _notify_diplomats_without_applicant(self, guild, request, embassy):
     channel = guild.get_channel(embassy.channel_id)
     if not isinstance(channel, discord.TextChannel):
