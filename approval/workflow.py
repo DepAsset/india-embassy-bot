@@ -32,22 +32,20 @@ class ApprovalWorkflow:
     async def create_preapproval(self, *, embassy_id: str, diplomat_id: int, applicant_warera_id: str, expires_at: datetime | None, reason: str | None) -> str:
         now = datetime.now(timezone.utc)
         preapproval_id = str(uuid4())
-        await self.preapprovals.insert_one({
-            "preapproval_id": preapproval_id,
-            "embassy_id": embassy_id,
-            "diplomat_id": diplomat_id,
-            "applicant_warera_id": applicant_warera_id,
-            "expires_at": expires_at,
-            "reason": reason,
-            "created_at": now,
-            "active": True,
-        })
+        await self.preapprovals.insert_one({"preapproval_id": preapproval_id, "embassy_id": embassy_id, "diplomat_id": diplomat_id, "applicant_warera_id": applicant_warera_id, "expires_at": expires_at, "reason": reason, "created_at": now, "active": True})
         await self.audit.log(action="PREAPPROVAL_CREATED", actor_id=diplomat_id, embassy_id=embassy_id, warera_id=applicant_warera_id, metadata={"preapproval_id": preapproval_id, "expires_at": expires_at.isoformat() if expires_at else None})
         return preapproval_id
 
     async def find_preapproval(self, embassy_id: str, applicant_warera_id: str) -> dict | None:
         now = datetime.now(timezone.utc)
-        return await self.preapprovals.find_one({"embassy_id": embassy_id, "applicant_warera_id": applicant_warera_id, "active": True, "$or": [{"expires_at": None}, {"expires_at": {"$gt": now}}]}, sort=[("created_at", -1)])
+        result = await self.preapprovals.find_one({"embassy_id": embassy_id, "applicant_warera_id": applicant_warera_id, "active": True, "$or": [{"expires_at": None}, {"expires_at": {"$gt": now}}]}, sort=[("created_at", -1)])
+        if result is None:
+            await self.preapprovals.update_many({"embassy_id": embassy_id, "applicant_warera_id": applicant_warera_id, "active": True, "expires_at": {"$lte": now}}, {"$set": {"active": False, "expired_at": now}})
+        return result
+
+    async def consume_preapproval(self, preapproval_id: str) -> bool:
+        result = await self.preapprovals.update_one({"preapproval_id": preapproval_id, "active": True}, {"$set": {"active": False, "used_at": datetime.now(timezone.utc)}})
+        return result.modified_count == 1
 
     async def revoke_preapproval(self, preapproval_id: str, actor_id: int, reason: str) -> bool:
         if not reason.strip():
@@ -61,18 +59,21 @@ class ApprovalWorkflow:
             raise ValueError("Request not found")
         warera_id = str(request.get("warera_user_id") or "")
         embassy_id = str(request.get("requested_embassy_id") or "")
-        if await self.find_preapproval(embassy_id, warera_id):
+        preapproval = await self.find_preapproval(embassy_id, warera_id)
+        if preapproval:
             return Route.PREAPPROVED
         flags = request.get("official_flags") or {}
         if flags.get("president") or flags.get("vice_president") or flags.get("eam_or_mofa"):
             return Route.SPECIAL_OFFICIAL
-        if str(request.get("verified_country_id") or "") == str(embassy_country_id):
+        applicant_id = str(request.get("verified_country_id") or "").strip().lower()
+        applicant_name = str(request.get("verified_country_name") or "").strip().lower()
+        embassy_key = str(embassy_country_id).strip().lower()
+        if applicant_id == embassy_key or applicant_name == embassy_key:
             return Route.FOREIGN_DIPLOMAT
         return Route.INDIAN_GOVERNMENT
 
     async def decide(self, request_id: str, actor_id: int, decision: Decision, route: Route, reason: str | None = None) -> bool:
         now = datetime.now(timezone.utc)
-        # First decision wins. A unique request_id index prevents duplicate final records.
         try:
             await self.decisions.insert_one({"request_id": request_id, "actor_id": actor_id, "decision": decision.value, "route": route.value, "reason": reason, "decided_at": now})
         except Exception as exc:
@@ -83,7 +84,7 @@ class ApprovalWorkflow:
         current = await self.requests.find_one({"request_id": request_id})
         if not current or current.get("state") not in {RequestState.DIPLOMAT_REVIEW.value, RequestState.GOVERNMENT_REVIEW.value, RequestState.PREAPPROVED.value, RequestState.AUTO_APPROVED.value}:
             return False
-        await self.requests.update_one({"request_id": request_id, "state": current["state"]}, {"$set": {"state": new_state, "decision": decision.value, "decision_actor_id": actor_id, "decision_reason": reason, "updated_at": now}})
+        await self.requests.update_one({"request_id": request_id, "state": current["state"]}, {"$set": {"state": new_state, "decision": decision.value, "decision_actor_id": actor_id, "decision_reason": reason, "updated_at": now, "active": False}})
         await self.audit.log(action=f"REQUEST_{decision.value}", actor_id=actor_id, request_id=request_id, embassy_id=str(current.get("requested_embassy_id") or ""), warera_id=str(current.get("warera_user_id") or ""), old_state=current.get("state"), new_state=new_state, reason=reason, metadata={"route": route.value})
         return True
 
@@ -91,15 +92,17 @@ class ApprovalWorkflow:
         request = await self.requests.find_one({"request_id": request_id})
         if not request:
             return False
-        route = Route.PREAPPROVED
+        preapproval = await self.find_preapproval(str(request.get("requested_embassy_id") or ""), str(request.get("warera_user_id") or ""))
+        if not preapproval or not await self.consume_preapproval(str(preapproval["preapproval_id"])):
+            return False
         now = datetime.now(timezone.utc)
         try:
-            await self.decisions.insert_one({"request_id": request_id, "actor_id": actor_id, "decision": Decision.APPROVED.value, "route": route.value, "reason": "Valid diplomat pre-approval", "decided_at": now})
+            await self.decisions.insert_one({"request_id": request_id, "actor_id": actor_id, "decision": Decision.APPROVED.value, "route": Route.PREAPPROVED.value, "reason": "Valid diplomat pre-approval", "decided_at": now})
         except Exception as exc:
             if exc.__class__.__name__ == "DuplicateKeyError":
                 return False
             raise
-        await self.requests.update_one({"request_id": request_id}, {"$set": {"state": RequestState.APPROVED.value, "decision": Decision.APPROVED.value, "decision_reason": "Valid diplomat pre-approval", "updated_at": now}})
+        await self.requests.update_one({"request_id": request_id}, {"$set": {"state": RequestState.APPROVED.value, "decision": Decision.APPROVED.value, "decision_reason": "Valid diplomat pre-approval", "updated_at": now, "active": False}})
         await self.audit.log(action="REQUEST_AUTO_APPROVED", actor_id=actor_id, request_id=request_id, embassy_id=str(request.get("requested_embassy_id") or ""), warera_id=str(request.get("warera_user_id") or ""), new_state=RequestState.APPROVED.value)
         return True
 
