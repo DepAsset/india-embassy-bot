@@ -5,6 +5,7 @@ import discord
 from app.cogs.embassy_flow import EmbassyFlow, EmbassyApprovalView
 from app.cogs.embassy_requests import CompanyVerificationView
 from verification.flow import VerificationFlow
+from app.embassy_patches import _dm_applicant
 
 
 # Keep the OTP available only while verification is pending. The Copy OTP
@@ -91,7 +92,15 @@ async def _guarded_decide(self, interaction, request_id, decision, route):
             ephemeral=True,
         )
         return
-    return await _original_decide(self, interaction, request_id, decision, route)
+
+    await _original_decide(self, interaction, request_id, decision, route)
+
+    # _original_decide closes the request and records the decision. Re-read the
+    # request to obtain the requested Embassy name for the applicant's DM.
+    if request and decision.value == "DECLINED":
+        embassy = await self.registry.get_by_id(str(request.get("requested_embassy_id") or ""))
+        embassy_name = embassy.country_name if embassy else "the requested Embassy"
+        await _dm_applicant(self, interaction.guild, int(request["discord_user_id"]), approved=False, embassy_name=embassy_name)
 
 
 EmbassyFlow.decide = _guarded_decide
