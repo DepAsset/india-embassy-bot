@@ -36,8 +36,11 @@ class EmbassyBot(commands.Bot):
         self.legacy_embassy_migration_done = False
 
     async def setup_hook(self) -> None:
-        await self.database.initialize()
+        # Bind Render's health port first so the Web Service has a live listener
+        # even while MongoDB and Discord extensions are initializing.
         self.health_runner = await start_health_server(settings.health_host, settings.health_port)
+
+        await self.database.initialize()
 
         # Restore the one-use welcome surprise buttons that belong to existing
         # accepted diplomats. Used surprises are registered as disabled views.
