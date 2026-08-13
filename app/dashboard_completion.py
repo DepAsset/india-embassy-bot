@@ -7,19 +7,12 @@ from access.service import AccessService
 from app.cogs.dashboards import EmbassyManagementView, ForeignDiplomatView
 from embassy.registry import EmbassyRegistry
 
-
 _original_management_init = EmbassyManagementView.__init__
 
 
 def _management_init(self, bot, *, timeout=None):
     _original_management_init(self, bot, timeout=timeout)
-    reconcile = discord.ui.Button(
-        label="Reconcile Access",
-        emoji="🔧",
-        style=discord.ButtonStyle.success,
-        custom_id="embassy:mgmt:reconcile",
-        row=1,
-    )
+    reconcile = discord.ui.Button(label="Reconcile Access", emoji="🔧", style=discord.ButtonStyle.success, custom_id="embassy:mgmt:reconcile", row=1)
     reconcile.callback = self._reconcile
     self.add_item(reconcile)
 
@@ -27,35 +20,19 @@ def _management_init(self, bot, *, timeout=None):
 async def _reconcile(self, interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
     projector = AccessProjector(self.bot.database)
-    assignments = await self.bot.database.collection("embassy_assignments").find(
-        {"active": True}, {"discord_user_id": 1}
-    ).limit(500).to_list(length=500)
-    user_ids = sorted({
-        int(item["discord_user_id"])
-        for item in assignments
-        if item.get("discord_user_id") is not None
-    })
-    guild = interaction.guild
-    if guild is None:
+    assignments = await self.bot.database.collection("embassy_assignments").find({"active": True}, {"discord_user_id": 1}).limit(500).to_list(length=500)
+    user_ids = sorted({int(item["discord_user_id"]) for item in assignments if item.get("discord_user_id") is not None})
+    if interaction.guild is None:
         await interaction.followup.send("Guild is unavailable.", ephemeral=True)
         return
-
-    reconciled = 0
-    failed = 0
+    reconciled = failed = 0
     for user_id in user_ids:
         try:
-            await projector.reconcile_member(guild, user_id)
+            await projector.reconcile_member(interaction.guild, user_id)
             reconciled += 1
         except Exception:
             failed += 1
-
-    await interaction.followup.send(
-        f"🔧 **Access reconciliation complete**\n\n"
-        f"Users checked: **{len(user_ids)}**\n"
-        f"Reconciled: **{reconciled}**\n"
-        f"Failed: **{failed}**",
-        ephemeral=True,
-    )
+    await interaction.followup.send(f"🔧 **Access reconciliation complete**\n\nUsers checked: **{len(user_ids)}**\nReconciled: **{reconciled}**\nFailed: **{failed}**", ephemeral=True)
 
 
 EmbassyManagementView.__init__ = _management_init
@@ -68,23 +45,14 @@ async def _diplomat_access(self, interaction: discord.Interaction, button):
     if not assignments:
         await interaction.response.send_message("You have no active Embassy assignments.", ephemeral=True)
         return
-
     lines = []
     for item in assignments:
         embassy = await registry.get_by_id(str(item["embassy_id"]))
         name = embassy.country_name if embassy else str(item["embassy_id"])
-        lines.append(
-            f"• **{name}** | `{item.get('assignment_type', 'UNKNOWN')}` | `{item.get('source', 'UNKNOWN')}`"
-        )
-
-    await interaction.response.send_message(
-        "🔐 **Your Embassy Access**\n\n" + "\n".join(lines),
-        ephemeral=True,
-    )
+        lines.append(f"• **{name}** | `{item.get('assignment_type', 'UNKNOWN')}` | `{item.get('source', 'UNKNOWN')}`")
+    await interaction.response.send_message("🔐 **Your Embassy Access**\n\n" + "\n".join(lines), ephemeral=True)
 
 
 ForeignDiplomatView.access = _diplomat_access
 
-# Final dashboard integration layer. This is intentionally imported here because
-# main.py already imports dashboard_completion before loading EmbassyRequestsCog.
 import app.dashboard_overhaul  # noqa: E402,F401
