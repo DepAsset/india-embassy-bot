@@ -62,7 +62,6 @@ EmbassyManagementView.__init__ = _management_init
 EmbassyManagementView._reconcile = _reconcile
 
 
-# Give the diplomat portal a real assignment breakdown instead of only a count.
 async def _diplomat_access(self, interaction: discord.Interaction, button):
     assignments = await AccessService(self.bot.database).active_for_user(interaction.user.id)
     registry = EmbassyRegistry(self.bot.database)
@@ -85,3 +84,7 @@ async def _diplomat_access(self, interaction: discord.Interaction, button):
 
 
 ForeignDiplomatView.access = _diplomat_access
+
+# Final dashboard integration layer. This is intentionally imported here because
+# main.py already imports dashboard_completion before loading EmbassyRequestsCog.
+import app.dashboard_overhaul  # noqa: E402,F401
