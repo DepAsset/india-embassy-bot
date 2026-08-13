@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -9,6 +10,8 @@ from core.audit import AuditLogger
 from core.database import Database
 from embassy.registry import Embassy, EmbassyRegistry
 from .snapshot import MigrationSnapshotService
+
+logger = logging.getLogger(__name__)
 
 # Bump this when the legacy Embassy mapping seed changes. MongoDB keeps the
 # previous migration record and the new version gets its own safety snapshot.
@@ -41,6 +44,18 @@ def _read_seed() -> list[dict[str, object]]:
 async def seed_legacy_embassies(database: Database, guild: discord.Guild) -> dict[str, int]:
     state = database.collection("migration_state")
     if await state.find_one({"migration_id": MIGRATION_ID}):
+        return {"status": 0, "inserted": 0, "updated": 0, "missing_channels": 0}
+
+    # The legacy seed is optional. The current Embassy system can operate from
+    # the MongoDB registry without this historical mapping file. Older builds
+    # expected the file to exist and crashed on every startup when it was not
+    # packaged into the container. Treat a missing seed as a clean no-op rather
+    # than a failed application startup/migration.
+    if not SEED_PATH.is_file():
+        logger.warning(
+            "Legacy Embassy seed file is not present at %s; skipping legacy migration.",
+            SEED_PATH,
+        )
         return {"status": 0, "inserted": 0, "updated": 0, "missing_channels": 0}
 
     registry = EmbassyRegistry(database)
