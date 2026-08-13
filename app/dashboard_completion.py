@@ -58,7 +58,18 @@ ForeignDiplomatView.access = _diplomat_access
 import app.dashboard_overhaul  # noqa: E402,F401
 import app.cogs.dashboards as _dashboards  # noqa: E402
 from app.dashboard_overhaul import AdminView, ForeignView  # noqa: E402
+from app.cogs.embassy_requests import EmbassyRequestsCog, RequestPanelView, VerificationStartView, CompanyVerificationView  # noqa: E402
 
-# Make the replacement Views the public dashboard classes before EmbassyRequestsCog loads.
 _dashboards.EmbassyManagementView = AdminView
 _dashboards.ForeignDiplomatView = ForeignView
+
+
+async def _dashboard_cog_load(self):
+    self.bot.add_view(RequestPanelView(self.service))
+    self.bot.add_view(VerificationStartView(self.service))
+    self.bot.add_view(CompanyVerificationView(self.service))
+    self.bot.add_view(AdminView(self.bot, timeout=None))
+    self.bot.add_view(ForeignView(self.bot, timeout=None))
+
+
+EmbassyRequestsCog.cog_load = _dashboard_cog_load
