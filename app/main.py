@@ -48,12 +48,8 @@ class EmbassyBot(commands.Bot):
 
         # Load the dependency container first, then the user-facing request
         # controls, then durable post-verification and recovery handlers.
-        #
-        # IMPORTANT: dashboard_completion/dashboard_overhaul used to replace
-        # dashboard View classes at import time. That made EmbassyManagementView
-        # instantiate a different View class than the one embassy_requests.py
-        # imports, which broke discord.py persistent-view validation. The
-        # dashboard implementation now lives directly in app/cogs/dashboards.py.
+        # Dashboard wiring is intentionally kept in the real cog/view modules;
+        # do not import legacy dashboard monkey-patch modules at startup.
         await self.load_extension("app.cogs.complete")
         await self.load_extension("app.cogs.embassy_requests")
         await self.load_extension("app.cogs.post_verification")
@@ -96,7 +92,3 @@ async def run() -> None:
     bot = EmbassyBot()
     async with bot:
         await bot.start(settings.discord_token)
-
-
-if __name__ == "__main__":
-    asyncio.run(run())
