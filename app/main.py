@@ -15,7 +15,6 @@ import app.integration_patches  # noqa: F401,E402
 import app.embassy_user_fixes  # noqa: F401,E402
 import app.safety_patches  # noqa: F401,E402
 import app.integration_completion  # noqa: F401,E402
-import app.dashboard_completion  # noqa: F401,E402
 import app.otp_ui_fix  # noqa: F401,E402
 from app.integration_completion import restore_surprise_views  # noqa: E402
 
@@ -46,6 +45,12 @@ class EmbassyBot(commands.Bot):
 
         # Load the dependency container first, then the user-facing request
         # controls, then durable post-verification and recovery handlers.
+        #
+        # IMPORTANT: dashboard_completion/dashboard_overhaul used to replace
+        # dashboard View classes at import time. That made EmbassyManagementView
+        # instantiate a different View class than the one embassy_requests.py
+        # imports, which broke discord.py persistent-view validation. The
+        # dashboard implementation now lives directly in app/cogs/dashboards.py.
         await self.load_extension("app.cogs.complete")
         await self.load_extension("app.cogs.embassy_requests")
         await self.load_extension("app.cogs.post_verification")
