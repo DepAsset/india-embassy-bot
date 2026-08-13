@@ -56,3 +56,9 @@ async def _diplomat_access(self, interaction: discord.Interaction, button):
 ForeignDiplomatView.access = _diplomat_access
 
 import app.dashboard_overhaul  # noqa: E402,F401
+import app.cogs.dashboards as _dashboards  # noqa: E402
+from app.dashboard_overhaul import AdminView, ForeignView  # noqa: E402
+
+# Make the replacement Views the public dashboard classes before EmbassyRequestsCog loads.
+_dashboards.EmbassyManagementView = AdminView
+_dashboards.ForeignDiplomatView = ForeignView
