@@ -15,6 +15,7 @@ COPY approval ./approval
 COPY embassy ./embassy
 COPY migration ./migration
 COPY verification ./verification
+COPY data ./data
 COPY .env.example ./.env.example
 
 CMD ["python", "-m", "app"]
