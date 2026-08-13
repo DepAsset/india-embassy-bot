@@ -78,7 +78,7 @@ async def apply_access(i,bot,m,mode,s):
     for eid in ids:
         try:
             if mode=='assign':
-                r=await svc.assign(m.id,eid,AssignmentType.AMBASSADOR,AccessSource.MANUAL,assigned_by=i.user.id);await proj.grant(i.guild,m.id,eid,i.user.id,'Embassy Dashboard manual assignment');changed+=int(r.created)
+                r=await svc.assign(m.id,eid,AssignmentType.AMBASSADOR,AccessSource.GOVERNMENT_OVERRIDE,assigned_by=i.user.id);await proj.grant(i.guild,m.id,eid,i.user.id,'Embassy Dashboard manual assignment');changed+=int(r.created)
             else:
                 r=await svc.revoke(m.id,eid,revoked_by=i.user.id,reason='Embassy Dashboard manual revocation',assignment_type=AssignmentType.AMBASSADOR)
                 if r.revoked:await proj.revoke(i.guild,m.id,eid,i.user.id,'Embassy Dashboard manual revocation');changed+=1
@@ -184,8 +184,8 @@ async def foreign_dashboard(self,interaction):
     ch=interaction.guild.get_channel(settings.channel_foreign_diplomat_dashboard_id)
     if not isinstance(ch,discord.TextChannel):return await interaction.response.send_message('Configured Foreign Diplomat dashboard channel is unavailable.',ephemeral=True)
     await ch.send(embed=discord.Embed(title='🤝 FOREIGN DIPLOMAT DASHBOARD',description='Manage your Embassy access, Embassy members and pre-approvals.',color=discord.Color.blurple()),view=ForeignView(self.bot,timeout=None));await interaction.response.send_message(f'✅ Dashboard posted in {ch.mention}.',ephemeral=True)
-EmbassyRequestsCog.embassy_dashboard.callback=admin_dashboard
-EmbassyRequestsCog.foreign_diplomat_dashboard.callback=foreign_dashboard
+EmbassyRequestsCog.embassy_dashboard._callback=admin_dashboard
+EmbassyRequestsCog.foreign_diplomat_dashboard._callback=foreign_dashboard
 
 def _admin_init(self,bot,*,timeout=None): AdminView.__init__(self,bot,timeout=timeout)
 def _foreign_init(self,bot,*,timeout=None): ForeignView.__init__(self,bot,timeout=timeout)
