@@ -37,7 +37,9 @@ class ReconciliationReport:
 
     @property
     def role_actions(self) -> tuple[ReconciliationAction, ...]:
-        return tuple(a for a in self.actions if a.kind.startswith("role_"))
+        # Legacy embassy access roles are intentionally outside reconciliation.
+        # They are left untouched and may be removed manually by the server owner.
+        return ()
 
 
 class EmbassyReconciliationEngine:
@@ -51,7 +53,6 @@ class EmbassyReconciliationEngine:
         guild: discord.Guild,
         snapshot: DiscordGuildSnapshot,
         embassies: list[dict],
-        legacy_roles: list[dict] | None = None,
     ) -> ReconciliationReport:
         del guild  # The snapshot is the only Discord state used during planning.
         layout = EmbassyLayoutPlanner.plan(embassies)
@@ -167,39 +168,7 @@ class EmbassyReconciliationEngine:
                     )
                 )
 
-        if legacy_roles:
-            role_by_id = {role.id: role for role in snapshot.roles}
-            for row in legacy_roles:
-                role = role_by_id.get(int(row["role_id"]))
-                if role is None:
-                    actions.append(
-                        ReconciliationAction(
-                            kind="role_missing",
-                            subject_id=int(row["role_id"]),
-                            subject_name=str(row["role_name"]),
-                            detail="Role recorded in Supabase was not found in the Discord snapshot.",
-                            risk="medium",
-                        )
-                    )
-                    continue
-                if row["disposition"] == "orphan_pending_deletion":
-                    actions.append(
-                        ReconciliationAction(
-                            kind="role_delete_candidate",
-                            subject_id=role.id,
-                            subject_name=role.name,
-                            detail=f"Delete only after membership review. Current members: {role.member_count}.",
-                            risk="high" if role.member_count else "medium",
-                        )
-                    )
-                elif role.name != row["role_name"]:
-                    actions.append(
-                        ReconciliationAction(
-                            kind="role_rename_candidate",
-                            subject_id=role.id,
-                            subject_name=role.name,
-                            detail=f"Canonical legacy-role name is {row['role_name']}.",
-                        )
-                    )
+        # Legacy embassy access roles are deliberately ignored.
+        # No role reads, renames, membership reviews, or deletions are planned.
 
         return ReconciliationReport(layout=layout, actions=tuple(actions))
