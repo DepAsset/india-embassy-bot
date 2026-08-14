@@ -51,9 +51,7 @@ class AccessProjector:
     async def ensure_role(self, guild: discord.Guild, user_id: int, role_id: int, reason: str) -> bool:
         member = guild.get_member(user_id) or await guild.fetch_member(user_id)
         role = guild.get_role(role_id)
-        if role is None:
-            return False
-        if role in member.roles:
+        if role is None or role in member.roles:
             return False
         await member.add_roles(role, reason=reason)
         return True
@@ -62,7 +60,9 @@ class AccessProjector:
         member = guild.get_member(user_id) or await guild.fetch_member(user_id)
         active = await self.assignments.active_for_user(user_id)
         active_embassies = {str(item["embassy_id"]) for item in active}
-        granted = 0
+        granted = revoked = 0
+
+        # Restore every assignment-backed direct permission.
         for embassy_id in active_embassies:
             try:
                 if await self.grant(guild, user_id, embassy_id, None, "Embassy access reconciliation"):
@@ -70,14 +70,37 @@ class AccessProjector:
             except (discord.HTTPException, ValueError):
                 continue
 
-        has_diplomat = any(item.get("assignment_type") == "FOREIGN_DIPLOMAT" for item in active)
+        # Remove stale direct overrides for Embassy channels no longer assigned.
+        for embassy in await self.registry.get_active():
+            if embassy.embassy_id in active_embassies:
+                continue
+            channel = guild.get_channel(embassy.channel_id)
+            if not isinstance(channel, discord.TextChannel):
+                continue
+            overwrite = channel.overwrites_for(member)
+            if overwrite.view_channel is True or overwrite.send_messages is True or overwrite.read_message_history is True:
+                try:
+                    await channel.set_permissions(member, overwrite=None, reason="Embassy access reconciliation")
+                    revoked += 1
+                except discord.HTTPException:
+                    continue
+
+        # Ambassadors are also Foreign Diplomats for global dashboard access.
+        has_diplomat = any(item.get("assignment_type") in {"FOREIGN_DIPLOMAT", "AMBASSADOR"} for item in active)
         has_ambassador = any(item.get("assignment_type") == "AMBASSADOR" for item in active)
-        for role_id, should_have in ((settings.role_foreign_diplomat_id, has_diplomat), (settings.role_ambassador_id, has_ambassador)):
+        for role_id, should_have in (
+            (settings.role_foreign_diplomat_id, has_diplomat),
+            (settings.role_ambassador_id, has_ambassador),
+        ):
             role = guild.get_role(role_id)
             if not role:
                 continue
-            if should_have and role not in member.roles:
-                await member.add_roles(role, reason="Embassy access reconciliation")
-            elif not should_have and role in member.roles:
-                await member.remove_roles(role, reason="Embassy access reconciliation")
-        return {"active_assignments": len(active), "channels_granted": granted}
+            try:
+                if should_have and role not in member.roles:
+                    await member.add_roles(role, reason="Embassy access reconciliation")
+                elif not should_have and role in member.roles:
+                    await member.remove_roles(role, reason="Embassy access reconciliation")
+            except discord.HTTPException:
+                continue
+
+        return {"active_assignments": len(active), "channels_granted": granted, "channels_revoked": revoked}
