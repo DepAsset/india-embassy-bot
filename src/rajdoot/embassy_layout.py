@@ -148,8 +148,16 @@ class EmbassyDiscordOrganizer:
         self,
         guild: discord.Guild,
         plan: LayoutPlan,
+        *,
+        allow_creation: bool = True,
     ) -> list[discord.CategoryChannel]:
         categories = self.find_embassy_categories(guild)
+
+        if not allow_creation and len(categories) < len(plan.categories):
+            raise RuntimeError(
+                f"Embassy layout requires {len(plan.categories)} categories, but only "
+                f"{len(categories)} existing Embassy categories were found."
+            )
 
         while len(categories) < len(plan.categories):
             template = categories[-1] if categories else None
@@ -179,8 +187,14 @@ class EmbassyDiscordOrganizer:
         self,
         guild: discord.Guild,
         plan: LayoutPlan,
+        *,
+        allow_category_creation: bool = True,
     ) -> dict[str, int]:
-        categories = await self.ensure_categories(guild, plan)
+        categories = await self.ensure_categories(
+            guild,
+            plan,
+            allow_creation=allow_category_creation,
+        )
         categories_by_number = {
             number: category
             for category in categories
@@ -188,6 +202,7 @@ class EmbassyDiscordOrganizer:
         }
 
         changed_categories = 0
+        reordered_categories = 0
         changed_channels = 0
         renamed_channels = 0
 
@@ -201,6 +216,27 @@ class EmbassyDiscordOrganizer:
                     reason="RAJDOOT embassy alphabetical layout",
                 )
                 changed_categories += 1
+
+        # Keep the Embassy categories together and in numeric order while
+        # preserving the location of the existing Embassy block. This avoids
+        # disturbing unrelated server categories more than necessary.
+        if categories:
+            embassy_base_position = min(category.position for category in categories)
+            category_positions: dict[discord.abc.GuildChannel, int] = {}
+            for category_plan in plan.categories:
+                category = categories_by_number.get(category_plan.index)
+                if category is None:
+                    continue
+                desired_position = embassy_base_position + category_plan.index - 1
+                if category.position != desired_position:
+                    category_positions[category] = desired_position
+
+            if category_positions:
+                await guild.edit_channel_positions(
+                    positions=category_positions,
+                    reason="RAJDOOT embassy category ordering",
+                )
+                reordered_categories += len(category_positions)
 
         desired_by_id = {entry.channel_id: entry for entry in plan.entries}
         for channel_id, entry in desired_by_id.items():
@@ -245,6 +281,7 @@ class EmbassyDiscordOrganizer:
 
         return {
             "categories_changed": changed_categories,
+            "categories_reordered": reordered_categories,
             "channels_moved": changed_channels,
             "channels_renamed": renamed_channels,
         }

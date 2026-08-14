@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import asyncio
-
 import discord
 
 from rajdoot.database import Database
 from rajdoot.discord_snapshot import DiscordSnapshotBuilder
+from rajdoot.embassy_layout import EmbassyDiscordOrganizer
 from rajdoot.embassy_reconciliation import EmbassyReconciliationEngine, ReconciliationAction, ReconciliationReport
 from rajdoot.ui import HomeView, NavigationView, embassy_directory_embed, home_embed
 
@@ -67,10 +66,10 @@ class ReconciliationConfirmView(discord.ui.View):
             await interaction.response.send_message("⏳ The reconciliation is already running.", ephemeral=True)
             return
 
-        unsupported = [a for a in self.report.actions if a.kind not in {"category_rename", "channel_rename"}]
+        unsupported = self.report.unsupported_actions
         if unsupported:
             await interaction.response.send_message(
-                "🛑 Execution is blocked because the reviewed plan contains actions outside the safe rename-only execution gate. Refresh the review first.",
+                "🛑 Execution is blocked because the reviewed plan contains an unsupported action. Refresh the review first.",
                 ephemeral=True,
             )
             return
@@ -81,9 +80,9 @@ class ReconciliationConfirmView(discord.ui.View):
             embed=discord.Embed(
                 title="⚙️ Embassy Reconciliation Running",
                 description=(
-                    "RAJDOOT is now applying **only the reviewed rename operations**.\n\n"
-                    f"Categories: **{len(self.report.category_actions)}**\n"
-                    f"Channels: **{len(self.report.channel_actions)}**\n\n"
+                    "RAJDOOT is now applying **only the reviewed Embassy layout operations**.\n\n"
+                    f"Category operations: **{len(self.report.category_actions)}**\n"
+                    f"Channel operations: **{len(self.report.channel_actions)}**\n\n"
                     "Legacy roles are untouched. No archive/delete operation is being performed."
                 ),
                 colour=discord.Colour.orange(),
@@ -98,8 +97,8 @@ class ReconciliationConfirmView(discord.ui.View):
                 embed=discord.Embed(
                     title="⚠️ Reconciliation stopped safely",
                     description=(
-                        "RAJDOOT encountered an error while applying the approved rename plan. "
-                        "Already-applied renames were not rolled back automatically.\n\n"
+                        "RAJDOOT encountered an error while applying the approved Embassy layout. "
+                        "Already-applied changes were not rolled back automatically.\n\n"
                         "Run **Review Layout** again to see the exact remaining differences."
                     ),
                     colour=discord.Colour.red(),
@@ -112,9 +111,11 @@ class ReconciliationConfirmView(discord.ui.View):
             embed=discord.Embed(
                 title="✅ Embassy Reconciliation Complete",
                 description=(
-                    f"Applied **{results['applied']}** rename operations successfully.\n"
-                    f"Skipped because already correct: **{results['skipped']}**\n\n"
-                    "🏛️ Categories and embassy channel names are now aligned with the reviewed plan.\n"
+                    f"Category renames: **{results['categories_changed']}**\n"
+                    f"Category reorders: **{results['categories_reordered']}**\n"
+                    f"Channel renames: **{results['channels_renamed']}**\n"
+                    f"Channel moves/reorders: **{results['channels_moved']}**\n\n"
+                    "🏛️ Embassy categories are now ordered and channels are arranged alphabetically.\n"
                     "🛡️ Legacy roles were not touched.\n"
                     "🪦 No archive/delete operation was performed.\n\n"
                     "Run **Review Layout** again to verify the final Discord state."
@@ -125,48 +126,12 @@ class ReconciliationConfirmView(discord.ui.View):
         )
 
     async def _execute(self, guild: discord.Guild) -> dict[str, int]:
-        applied = 0
-        skipped = 0
-
-        category_actions = [a for a in self.report.actions if a.kind == "category_rename"]
-        channel_actions = [a for a in self.report.actions if a.kind == "channel_rename"]
-
-        # Categories first so the Discord layout has its final canonical names.
-        for action in category_actions:
-            category = guild.get_channel(int(action.subject_id))
-            target_name = action.detail.removeprefix("Rename to ").removesuffix(".")
-            if not isinstance(category, discord.CategoryChannel):
-                raise RuntimeError(f"Expected category {action.subject_id} was not found")
-            if category.name == target_name:
-                skipped += 1
-                continue
-            await category.edit(name=target_name, reason="RAJDOOT approved embassy reconciliation")
-            applied += 1
-            await asyncio.sleep(0.15)
-
-        async def rename_channel(action: ReconciliationAction) -> str:
-            channel = guild.get_channel(int(action.subject_id))
-            target_name = action.detail.removeprefix("Rename to ").removesuffix(".")
-            if not isinstance(channel, discord.TextChannel):
-                raise RuntimeError(f"Expected embassy text channel {action.subject_id} was not found")
-            if channel.name == target_name:
-                return "skipped"
-            await channel.edit(name=target_name, reason="RAJDOOT approved embassy reconciliation")
-            await asyncio.sleep(0.12)
-            return "applied"
-
-        # Discord permits independent channel routes, but a small semaphore keeps
-        # the operation fast without flooding the API or causing a burst of 429s.
-        semaphore = asyncio.Semaphore(5)
-
-        async def bounded(action: ReconciliationAction) -> str:
-            async with semaphore:
-                return await rename_channel(action)
-
-        outcomes = await asyncio.gather(*(bounded(action) for action in channel_actions))
-        applied += outcomes.count("applied")
-        skipped += outcomes.count("skipped")
-        return {"applied": applied, "skipped": skipped}
+        organizer = EmbassyDiscordOrganizer()
+        return await organizer.apply_plan(
+            guild,
+            self.report.layout,
+            allow_category_creation=False,
+        )
 
 
 class ReconciliationReviewView(discord.ui.View):
@@ -188,6 +153,7 @@ class ReconciliationReviewView(discord.ui.View):
     def _icon(kind: str) -> str:
         return {
             "category_rename": "✏️",
+            "category_reorder": "↕️",
             "category_create": "📁",
             "channel_rename": "✏️",
             "channel_move": "↪️",
@@ -205,8 +171,9 @@ class ReconciliationReviewView(discord.ui.View):
             title="🔎 Embassy Reconciliation Plan",
             description=(
                 "This is a **read-only preview**. Nothing has been changed in Discord.\n\n"
-                "RAJDOOT is keeping execution locked until the planned embassy layout has been reviewed.\n\n"
-                "Legacy embassy access roles are **out of scope** and will not be changed by this migration."
+                "RAJDOOT is keeping execution locked until the planned Embassy layout has been reviewed.\n\n"
+                "The approved scope is names, category ordering, category placement, and alphabetical channel ordering.\n"
+                "Legacy embassy access roles are **out of scope** and will not be changed."
             ),
             colour=discord.Colour.blurple(),
         )
@@ -222,8 +189,8 @@ class ReconciliationReviewView(discord.ui.View):
         embed.add_field(
             name="📊 Plan",
             value=(
-                f"Categories: **{len(self.report.category_actions)}**\n"
-                f"Channels: **{len(self.report.channel_actions)}**\n"
+                f"Category operations: **{len(self.report.category_actions)}**\n"
+                f"Channel operations: **{len(self.report.channel_actions)}**\n"
                 f"Archive: **{len(self.report.archive_actions)}**\n"
                 "Legacy roles: **Ignored**"
             ),
@@ -269,10 +236,10 @@ class ReconciliationReviewView(discord.ui.View):
                 title="⚠️ Confirm Embassy Reconciliation",
                 description=(
                     "You have reviewed the complete plan. The next step will make Discord changes.\n\n"
-                    f"**{len(self.report.category_actions)}** category renames\n"
-                    f"**{len(self.report.channel_actions)}** embassy channel renames\n\n"
+                    f"**{len(self.report.category_actions)}** category operations\n"
+                    f"**{len(self.report.channel_actions)}** embassy channel operations\n\n"
                     "**This execution gate does NOT delete roles, archive channels, or change memberships.**\n"
-                    "It will apply only the reviewed category/channel rename actions."
+                    "It will apply only the reviewed Embassy naming and layout operations."
                 ),
                 colour=discord.Colour.orange(),
             ),
@@ -327,13 +294,34 @@ class GovernmentEmbassyView(NavigationView):
     def _summary_embed(report: ReconciliationReport) -> discord.Embed:
         embed = discord.Embed(
             title="🔎 Embassy Reconciliation Plan",
-            description="This is a **read-only preview**. Nothing has been changed in Discord.\n\nRAJDOOT has prepared the complete plan. Open **Detailed Review** to inspect every item before anything can ever be approved.",
+            description="This is a **read-only preview**. Nothing has been changed in Discord.\n\nRAJDOOT has prepared the complete Embassy naming and ordering plan. Open **Detailed Review** to inspect every item before anything can ever be approved.",
             colour=discord.Colour.blurple(),
         )
-        embed.add_field(name="🏛️ Desired Layout", value=f"**{len(report.layout.entries)}** active embassies\n**{len(report.layout.categories)}** Embassy categories\n" + "\n".join(f"• {c.name}" for c in report.layout.categories), inline=False)
-        embed.add_field(name="📊 Planned Changes", value=f"Category changes: **{len(report.category_actions)}**\nChannel changes: **{len(report.channel_actions)}**\nArchive candidates: **{len(report.archive_actions)}**\nLegacy roles: **Ignored**", inline=True)
+        embed.add_field(
+            name="🏛️ Desired Layout",
+            value=(
+                f"**{len(report.layout.entries)}** active embassies\n"
+                f"**{len(report.layout.categories)}** Embassy categories\n"
+                + "\n".join(f"• {c.name}" for c in report.layout.categories)
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="📊 Planned Changes",
+            value=(
+                f"Category operations: **{len(report.category_actions)}**\n"
+                f"Channel operations: **{len(report.channel_actions)}**\n"
+                f"Archive candidates: **{len(report.archive_actions)}**\n"
+                "Legacy roles: **Ignored**"
+            ),
+            inline=True,
+        )
         high_risk = sum(1 for action in report.actions if action.risk == "high")
-        embed.add_field(name="🛡️ Safety", value=f"High-risk items: **{high_risk}**\nNo writes performed\nExecution remains locked", inline=True)
+        embed.add_field(
+            name="🛡️ Safety",
+            value=f"High-risk items: **{high_risk}**\nNo writes performed\nExecution remains locked",
+            inline=True,
+        )
         return embed
 
     @discord.ui.button(label="Detailed Review", emoji="🔍", style=discord.ButtonStyle.success, custom_id="rajdoot:government:embassies:detailed-review")
