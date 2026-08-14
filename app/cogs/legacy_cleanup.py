@@ -40,7 +40,7 @@ class LegacyCleanupConfirmView(discord.ui.View):
             return False
         return True
 
-    @discord.ui.button(label="Confirm Cleanup", emoji="🧹", style=discord.ButtonStyle.danger, custom_id="embassy:legacy-cleanup:confirm")
+    @discord.ui.button(label="Remove Member Access", emoji="🧹", style=discord.ButtonStyle.danger, custom_id="embassy:legacy-cleanup:confirm")
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         if self.running:
             await interaction.response.send_message("Cleanup is already running.", ephemeral=True)
@@ -51,16 +51,19 @@ class LegacyCleanupConfirmView(discord.ui.View):
         try:
             result = await cleanup_legacy_direct_access(interaction.guild)
             await interaction.followup.send(
-                "🧹 **Legacy Embassy Access Cleanup Complete**\n\n"
+                "🧹 **Legacy Embassy Member Access Cleanup Complete**\n\n"
                 f"Embassy channels scanned: **{result.channels_scanned}**\n"
-                f"Legacy member overrides found: **{result.member_overrides_found}**\n"
-                f"Overrides removed: **{result.overrides_removed}**\n"
+                f"Hard-coded member entries found: **{result.member_overrides_found}**\n"
+                f"Member entries completely removed: **{result.overrides_removed}**\n"
                 f"Failures: **{result.failures}**\n\n"
-                "The old direct-access migration remains retired and will not recreate these permissions.",
+                "✅ Embassy roles were **not** modified.\n"
+                "✅ @everyone was **not** modified.\n"
+                "✅ President / VP / NSA / Minister / Foreign Diplomat / bot roles were **not** modified.\n\n"
+                "The new system will not recreate these member-specific permissions.",
                 ephemeral=True,
             )
         except Exception:
-            log.exception("Legacy Embassy access cleanup failed")
+            log.exception("Legacy Embassy member access cleanup failed")
             await interaction.followup.send("⚠️ Cleanup failed. Check Render logs before retrying.", ephemeral=True)
         finally:
             self.stop()
@@ -77,7 +80,7 @@ class LegacyCleanupCog(commands.Cog):
 
     @app_commands.command(
         name="cleanup-legacy-access",
-        description="One-time cleanup of legacy direct member access on Embassy channels.",
+        description="Remove hard-coded member access from Embassy channels without touching roles.",
     )
     async def cleanup(self, interaction: discord.Interaction) -> None:
         if not interaction.guild or not isinstance(interaction.user, discord.Member) or not authorized(interaction.user):
@@ -85,11 +88,12 @@ class LegacyCleanupCog(commands.Cog):
             return
 
         await interaction.response.send_message(
-            "⚠️ **Legacy Embassy Access Cleanup**\n\n"
-            "This will inspect the live Embassy channel permission overwrites and remove the old direct member access created by the legacy migration.\n\n"
-            "It will **not** modify `@everyone` or role overwrites. Unrelated member permissions are preserved.\n\n"
-            "This operation may take a few minutes because Discord rate-limits permission changes.\n\n"
-            "**Do you want to continue?**",
+            "⚠️ **Legacy Embassy Member Access Cleanup**\n\n"
+            "This will completely remove explicit **member-specific** permission entries from Embassy channels.\n\n"
+            "It will **NOT** modify any roles, including Embassy Access roles, President, Vice President, NSA, Minister, Foreign Diplomats, bot/admin roles, or `@everyone`.\n\n"
+            "This is the reset we want for the new system: members will no longer be hard-coded into Embassy channels.\n\n"
+            "Discord rate-limits permission changes, so the operation may take a few minutes.\n\n"
+            "**Do you want to remove the member entries?**",
             view=LegacyCleanupConfirmView(self.bot, interaction.user.id),
             ephemeral=True,
         )
