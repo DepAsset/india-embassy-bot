@@ -6,7 +6,7 @@ import discord
 from rajdoot.config import settings
 from rajdoot.database import Database
 from rajdoot.dashboards import DiplomatDashboardView, GovernmentDashboardView
-from rajdoot.ui import ensure_dashboard_message
+from rajdoot.ui import HomeView, ensure_dashboard_message
 
 
 logger = logging.getLogger("rajdoot")
@@ -28,6 +28,7 @@ class RajdootBot(discord.Client):
 
     async def setup_hook(self) -> None:
         await self.database.connect()
+        self.add_view(HomeView(self.database))
         self.add_view(GovernmentDashboardView(self.database))
         self.add_view(DiplomatDashboardView(self.database))
         logger.info("Supabase PostgreSQL connection established")
