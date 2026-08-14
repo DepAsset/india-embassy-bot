@@ -5,7 +5,6 @@ import discord
 from rajdoot.database import Database
 from rajdoot.discord_snapshot import DiscordSnapshotBuilder
 from rajdoot.embassy_reconciliation import EmbassyReconciliationEngine, ReconciliationReport
-from rajdoot.layout_service import EmbassyLayoutService
 from rajdoot.ui import HomeView, NavigationView, embassy_directory_embed, home_embed
 
 
@@ -60,7 +59,7 @@ class GovernmentDashboardView(discord.ui.View):
 
 class GovernmentEmbassyView(NavigationView):
     def __init__(self, database: Database) -> None:
-        super().__init__(database, timeout=None)
+        super().__init__(database)
 
     @discord.ui.button(label="Review Layout", emoji="🧭", style=discord.ButtonStyle.success, custom_id="rajdoot:government:embassies:review")
     async def review_layout(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
