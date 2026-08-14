@@ -224,23 +224,23 @@ class EmbassyDiscordOrganizer:
                 )
                 changed_categories += 1
 
+        # discord.py exposes channel ordering through each GuildChannel's
+        # position/edit API; Guild has no edit_channel_positions method.
+        # Move the Embassy categories one at a time into their final numeric
+        # order, starting from the current top of the Embassy block.
         if categories:
             embassy_base_position = min(category.position for category in categories)
-            category_positions: dict[discord.abc.GuildChannel, int] = {}
             for category_plan in plan.categories:
                 category = categories_by_number.get(category_plan.index)
                 if category is None:
                     continue
                 desired_position = embassy_base_position + category_plan.index - 1
                 if category.position != desired_position:
-                    category_positions[category] = desired_position
-
-            if category_positions:
-                await guild.edit_channel_positions(
-                    positions=category_positions,
-                    reason="RAJDOOT embassy category ordering",
-                )
-                reordered_categories += len(category_positions)
+                    await category.edit(
+                        position=desired_position,
+                        reason="RAJDOOT embassy category ordering",
+                    )
+                    reordered_categories += 1
 
         desired_by_id = {entry.channel_id: entry for entry in plan.entries}
 
@@ -328,9 +328,10 @@ class EmbassyDiscordOrganizer:
             changed_channels += 1
             del pending_moves[channel_id]
 
-        # With all channels in their final categories, apply the alphabetical
-        # order in one Discord position update.
-        positions: dict[discord.abc.GuildChannel, int] = {}
+        # Discord.py does not provide Guild.edit_channel_positions. Apply the
+        # final order through GuildChannel.edit(position=...). Doing this in
+        # ascending desired order makes each placement deterministic while
+        # keeping all channels inside their already-final categories.
         for category_plan in plan.categories:
             category = categories_by_number[category_plan.index]
             for entry in category_plan.entries:
@@ -339,14 +340,11 @@ class EmbassyDiscordOrganizer:
                     continue
                 desired_position = category.position + 1 + entry.position
                 if channel.position != desired_position:
-                    positions[channel] = desired_position
-
-        if positions:
-            await guild.edit_channel_positions(
-                positions=positions,
-                reason="RAJDOOT embassy alphabetical layout",
-            )
-            changed_channels += len(positions)
+                    await channel.edit(
+                        position=desired_position,
+                        reason="RAJDOOT embassy alphabetical layout",
+                    )
+                    changed_channels += 1
 
         return {
             "categories_changed": changed_categories,
