@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 
 import discord
 
@@ -52,15 +53,15 @@ class EmbassyReconciliationEngine:
         embassies: list[dict],
         legacy_roles: list[dict] | None = None,
     ) -> ReconciliationReport:
+        del guild  # The snapshot is the only Discord state used during planning.
         layout = EmbassyLayoutPlanner.plan(embassies)
         actions: list[ReconciliationAction] = []
 
-        categories_by_number = {
-            number: category
-            for category in snapshot.categories
-            if (number := EmbassyLayoutPlanner.discord_category_number(_category(category)))
-            is not None
-        }
+        categories_by_number = {}
+        for category in snapshot.categories:
+            match = re.fullmatch(r"Embassy\s+(\d+)(?:\s+\([A-Z]-[A-Z]\))?", category.name)
+            if match:
+                categories_by_number[int(match.group(1))] = category
 
         for category_plan in layout.categories:
             category = categories_by_number.get(category_plan.index)
@@ -129,7 +130,7 @@ class EmbassyReconciliationEngine:
                         kind="channel_reorder",
                         subject_id=channel.id,
                         subject_name=channel.name,
-                        detail=f"Move from position {channel.position} to desired layout position.",
+                        detail="Move to the calculated alphabetical position using the final bulk reorder step.",
                     )
                 )
 
@@ -202,11 +203,3 @@ class EmbassyReconciliationEngine:
                     )
 
         return ReconciliationReport(layout=layout, actions=tuple(actions))
-
-
-def _category(snapshot_category: object) -> discord.CategoryChannel:
-    """Adapter used so the layout parser can stay independent of snapshot types."""
-    # A lightweight proxy is enough because discord_category_number only reads .name.
-    category = discord.CategoryChannel.__new__(discord.CategoryChannel)
-    category.name = getattr(snapshot_category, "name")
-    return category
