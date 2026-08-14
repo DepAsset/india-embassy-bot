@@ -16,6 +16,9 @@ class Settings(BaseSettings):
     warera_api_base_url: str = "https://api.warera.io"
     warera_api_token: str | None = None
 
+    health_host: str = "0.0.0.0"
+    health_port: int = 10000
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
