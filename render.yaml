@@ -1,6 +1,0 @@
-services:
-  - type: web
-    name: india-embassy-bot
-    runtime: docker
-    healthCheckPath: /health
-    autoDeploy: true
