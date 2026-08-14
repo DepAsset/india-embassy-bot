@@ -32,9 +32,6 @@ class EmbassyLayoutPlanner:
     """Calculate the desired embassy layout without touching Discord."""
 
     MAX_PER_CATEGORY = 50
-    # Legacy servers may have separators, letter ranges, or even an emoji
-    # prefix around the category name. The numeric Embassy index is the stable
-    # identity; reconciliation normalizes the full name.
     CATEGORY_NUMBER_PATTERN = re.compile(r"\bEmbassy\s*[-#:]?\s*(\d+)\b", re.IGNORECASE)
 
     @classmethod
@@ -227,8 +224,6 @@ class EmbassyDiscordOrganizer:
                 )
                 changed_categories += 1
 
-        # Keep the Embassy categories together and in numeric order while
-        # preserving the location of the existing Embassy block.
         if categories:
             embassy_base_position = min(category.position for category in categories)
             category_positions: dict[discord.abc.GuildChannel, int] = {}
@@ -249,7 +244,7 @@ class EmbassyDiscordOrganizer:
 
         desired_by_id = {entry.channel_id: entry for entry in plan.entries}
 
-        # Rename first. This operation does not consume category capacity.
+        # Rename first; renaming does not consume category capacity.
         for channel_id, entry in desired_by_id.items():
             channel = guild.get_channel(channel_id)
             if not isinstance(channel, discord.TextChannel):
@@ -262,11 +257,6 @@ class EmbassyDiscordOrganizer:
                 )
                 renamed_channels += 1
 
-        # Discord limits every category to 50 channels. Moving channels one at
-        # a time in arbitrary embassy order can therefore fail when a target
-        # category is temporarily full even though the final layout is valid.
-        # Move channels in a capacity-aware order: always free space from a
-        # category before moving another channel into it.
         current_counts = {category.id: len(category.channels) for category in categories}
         desired_category_by_channel = {
             channel_id: categories_by_number[entry.category_index].id
@@ -281,20 +271,20 @@ class EmbassyDiscordOrganizer:
             if channel.category_id != target_category_id:
                 pending_moves[channel_id] = (channel, target_category_id)
 
-        # Validate the final capacity before performing any move. Unrelated
-        # channels are never evicted to make room for Embassy channels.
-        desired_embassy_counts = {category.id: 0 for category in categories}
+        # Count unrelated channels already occupying Embassy categories and
+        # compare them with the complete desired final state. We never evict
+        # unrelated channels just to make the reconciliation fit.
         embassy_ids = set(desired_by_id)
         non_embassy_counts = {category.id: 0 for category in categories}
         for category in categories:
             for channel in category.channels:
-                if channel.id in embassy_ids:
-                    desired_entry = desired_by_id.get(channel.id)
-                    if desired_entry is not None:
-                        target_id = categories_by_number[desired_entry.category_index].id
-                        desired_embassy_counts[target_id] += 1
-                else:
+                if channel.id not in embassy_ids:
                     non_embassy_counts[category.id] += 1
+
+        desired_embassy_counts = {category.id: 0 for category in categories}
+        for entry in plan.entries:
+            target_id = categories_by_number[entry.category_index].id
+            desired_embassy_counts[target_id] += 1
 
         for category in categories:
             desired_total = non_embassy_counts[category.id] + desired_embassy_counts[category.id]
@@ -305,12 +295,11 @@ class EmbassyDiscordOrganizer:
                     "Move unrelated channels out of the Embassy category first."
                 )
 
+        # Discord rejects a move into a full category even if another embassy
+        # channel is about to leave that category. Always perform an outbound
+        # move first whenever possible, freeing capacity before filling it.
         while pending_moves:
             candidate: tuple[int, discord.TextChannel, int] | None = None
-
-            # Prefer moves whose destination currently has room. When a full
-            # category needs to exchange channels with another category, this
-            # naturally moves the outbound channel first and frees a slot.
             for channel_id, (channel, target_category_id) in pending_moves.items():
                 if current_counts.get(target_category_id, 0) < self.MAX_CHANNELS_PER_CATEGORY:
                     candidate = (channel_id, channel, target_category_id)
@@ -339,8 +328,8 @@ class EmbassyDiscordOrganizer:
             changed_channels += 1
             del pending_moves[channel_id]
 
-        # Once every channel is in its correct category, perform the final
-        # alphabetical ordering in one Discord position update.
+        # With all channels in their final categories, apply the alphabetical
+        # order in one Discord position update.
         positions: dict[discord.abc.GuildChannel, int] = {}
         for category_plan in plan.categories:
             category = categories_by_number[category_plan.index]
