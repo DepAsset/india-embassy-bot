@@ -1,13 +1,13 @@
 """One-time cleanup of legacy direct member permissions on embassy channels.
 
-This intentionally does NOT use the old migration snapshot.  The previous
-migration may have produced an incomplete snapshot, so cleanup is based on
-live Discord channel permission overwrites and the known legacy embassy role
-mapping.
+This intentionally does NOT use the old migration snapshot. The previous
+migration produced an incomplete rollback snapshot, so cleanup is based on
+live Discord channel permission overwrites.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 
@@ -25,9 +25,6 @@ class CleanupResult:
     skipped: int = 0
 
 
-# Permissions that the legacy direct-access migration granted.  We only remove
-# an overwrite when it is a member overwrite and contains one of these grants.
-# Other member-specific permissions are preserved.
 _LEGACY_GRANTS = {
     "view_channel": True,
     "send_messages": True,
@@ -53,19 +50,45 @@ def _remove_legacy_bits(overwrite: discord.PermissionOverwrite) -> discord.Permi
     return discord.PermissionOverwrite(**data)
 
 
-async def cleanup_legacy_direct_access(guild: discord.Guild) -> CleanupResult:
-    """Remove legacy member-specific embassy access from live Discord channels.
+async def _set_permissions_safely(
+    channel: discord.abc.GuildChannel,
+    target: discord.Member,
+    replacement: discord.PermissionOverwrite | None,
+) -> None:
+    """Apply a permission change with conservative Discord rate-limit handling."""
+    # Keep mutations deliberately serialized. Discord permission endpoints are
+    # heavily rate-limited and the old migration already hit HTTP 429s.
+    for attempt in range(5):
+        try:
+            await channel.set_permissions(
+                target,
+                overwrite=replacement,
+                reason="Remove legacy Embassy direct member access",
+            )
+            # Small pacing delay prevents a burst of permission PUTs across
+            # dozens of Embassy channels.
+            await asyncio.sleep(0.35)
+            return
+        except discord.HTTPException as exc:
+            if exc.status != 429 or attempt >= 4:
+                raise
+            retry_after = getattr(exc, "retry_after", None)
+            delay = float(retry_after) if retry_after else min(2.0 * (attempt + 1), 8.0)
+            await asyncio.sleep(delay)
 
-    Role overwrites and @everyone overwrites are never touched.  Member
-    overwrites that contain the legacy grants are either reduced to unrelated
-    permissions or removed entirely.
+
+async def cleanup_legacy_direct_access(guild: discord.Guild) -> CleanupResult:
+    """Remove legacy member-specific Embassy access from live Discord channels.
+
+    Role overwrites and @everyone overwrites are never touched. Member
+    overwrites are reduced by removing only the three permissions used by the
+    legacy direct-access migration. Any unrelated member permissions remain.
     """
     result = CleanupResult()
 
     for channel in guild.channels:
         if not isinstance(channel, discord.abc.GuildChannel):
             continue
-        # Only channels conventionally belonging to an embassy are considered.
         if "embassy" not in channel.name.lower():
             continue
 
@@ -79,15 +102,14 @@ async def cleanup_legacy_direct_access(guild: discord.Guild) -> CleanupResult:
             result.member_overrides_found += 1
             replacement = _remove_legacy_bits(overwrite)
             try:
-                if replacement is None:
-                    await channel.set_permissions(target, overwrite=None,
-                                                  reason="Remove legacy Embassy direct member access")
-                else:
-                    await channel.set_permissions(target, overwrite=replacement,
-                                                  reason="Remove legacy Embassy direct member access")
+                await _set_permissions_safely(channel, target, replacement)
                 result.overrides_removed += 1
-            except (discord.Forbidden, discord.HTTPException) as exc:
+            except (discord.Forbidden, discord.HTTPException):
                 result.failures += 1
-                log.exception("Failed removing legacy access channel=%s member=%s", channel.id, target.id, exc_info=exc)
+                log.exception(
+                    "Failed removing legacy access channel=%s member=%s",
+                    channel.id,
+                    target.id,
+                )
 
     return result
