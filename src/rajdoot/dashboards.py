@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 import discord
 
 from rajdoot.database import Database
@@ -37,6 +39,134 @@ class GovernmentDashboardView(discord.ui.View):
     @discord.ui.button(label="Migration / Reconcile", emoji="🔄", style=discord.ButtonStyle.secondary, custom_id="rajdoot:government:migration")
     async def migration(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await interaction.response.send_message("🔄 Migration and reconciliation tools will appear here once the legacy embassy registry is safely mapped.", ephemeral=True)
+
+
+class ReconciliationConfirmView(discord.ui.View):
+    def __init__(self, database: Database, report: ReconciliationReport, guild_id: int) -> None:
+        super().__init__(timeout=120)
+        self.database = database
+        self.report = report
+        self.guild_id = guild_id
+        self.executing = False
+
+    @staticmethod
+    def _authorized(interaction: discord.Interaction) -> bool:
+        return isinstance(interaction.user, discord.Member) and (
+            interaction.user.guild_permissions.manage_guild or interaction.user.guild_permissions.administrator
+        )
+
+    @discord.ui.button(label="✅ Confirm & Execute", style=discord.ButtonStyle.success, row=0)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if not self._authorized(interaction):
+            await interaction.response.send_message("🔐 Only authorized server managers can execute the reconciliation.", ephemeral=True)
+            return
+        if interaction.guild is None or interaction.guild.id != self.guild_id:
+            await interaction.response.send_message("🌿 This confirmation belongs to the embassy server where the review was created.", ephemeral=True)
+            return
+        if self.executing:
+            await interaction.response.send_message("⏳ The reconciliation is already running.", ephemeral=True)
+            return
+
+        unsupported = [a for a in self.report.actions if a.kind not in {"category_rename", "channel_rename"}]
+        if unsupported:
+            await interaction.response.send_message(
+                "🛑 Execution is blocked because the reviewed plan contains actions outside the safe rename-only execution gate. Refresh the review first.",
+                ephemeral=True,
+            )
+            return
+
+        self.executing = True
+        button.disabled = True
+        await interaction.response.edit_message(
+            embed=discord.Embed(
+                title="⚙️ Embassy Reconciliation Running",
+                description=(
+                    "RAJDOOT is now applying **only the reviewed rename operations**.\n\n"
+                    f"Categories: **{len(self.report.category_actions)}**\n"
+                    f"Channels: **{len(self.report.channel_actions)}**\n\n"
+                    "Legacy roles are untouched. No archive/delete operation is being performed."
+                ),
+                colour=discord.Colour.orange(),
+            ),
+            view=self,
+        )
+
+        try:
+            results = await self._execute(interaction.guild)
+        except Exception:
+            await interaction.edit_original_response(
+                embed=discord.Embed(
+                    title="⚠️ Reconciliation stopped safely",
+                    description=(
+                        "RAJDOOT encountered an error while applying the approved rename plan. "
+                        "Already-applied renames were not rolled back automatically.\n\n"
+                        "Run **Review Layout** again to see the exact remaining differences."
+                    ),
+                    colour=discord.Colour.red(),
+                ),
+                view=GovernmentEmbassyView(self.database),
+            )
+            raise
+
+        await interaction.edit_original_response(
+            embed=discord.Embed(
+                title="✅ Embassy Reconciliation Complete",
+                description=(
+                    f"Applied **{results['applied']}** rename operations successfully.\n"
+                    f"Skipped because already correct: **{results['skipped']}**\n\n"
+                    "🏛️ Categories and embassy channel names are now aligned with the reviewed plan.\n"
+                    "🛡️ Legacy roles were not touched.\n"
+                    "🪦 No archive/delete operation was performed.\n\n"
+                    "Run **Review Layout** again to verify the final Discord state."
+                ),
+                colour=discord.Colour.green(),
+            ),
+            view=GovernmentEmbassyView(self.database),
+        )
+
+    async def _execute(self, guild: discord.Guild) -> dict[str, int]:
+        applied = 0
+        skipped = 0
+
+        category_actions = [a for a in self.report.actions if a.kind == "category_rename"]
+        channel_actions = [a for a in self.report.actions if a.kind == "channel_rename"]
+
+        # Categories first so the Discord layout has its final canonical names.
+        for action in category_actions:
+            category = guild.get_channel(int(action.subject_id))
+            target_name = action.detail.removeprefix("Rename to ").removesuffix(".")
+            if not isinstance(category, discord.CategoryChannel):
+                raise RuntimeError(f"Expected category {action.subject_id} was not found")
+            if category.name == target_name:
+                skipped += 1
+                continue
+            await category.edit(name=target_name, reason="RAJDOOT approved embassy reconciliation")
+            applied += 1
+            await asyncio.sleep(0.15)
+
+        async def rename_channel(action: ReconciliationAction) -> str:
+            channel = guild.get_channel(int(action.subject_id))
+            target_name = action.detail.removeprefix("Rename to ").removesuffix(".")
+            if not isinstance(channel, discord.TextChannel):
+                raise RuntimeError(f"Expected embassy text channel {action.subject_id} was not found")
+            if channel.name == target_name:
+                return "skipped"
+            await channel.edit(name=target_name, reason="RAJDOOT approved embassy reconciliation")
+            await asyncio.sleep(0.12)
+            return "applied"
+
+        # Discord permits independent channel routes, but a small semaphore keeps
+        # the operation fast without flooding the API or causing a burst of 429s.
+        semaphore = asyncio.Semaphore(5)
+
+        async def bounded(action: ReconciliationAction) -> str:
+            async with semaphore:
+                return await rename_channel(action)
+
+        outcomes = await asyncio.gather(*(bounded(action) for action in channel_actions))
+        applied += outcomes.count("applied")
+        skipped += outcomes.count("skipped")
+        return {"applied": applied, "skipped": skipped}
 
 
 class ReconciliationReviewView(discord.ui.View):
@@ -126,9 +256,28 @@ class ReconciliationReviewView(discord.ui.View):
         self.next_page.disabled = (self.page + 1) * self.page_size >= len(self.report.actions)
         await interaction.response.edit_message(embed=self.embed(), view=self)
 
-    @discord.ui.button(label="🔒 Execution Locked", style=discord.ButtonStyle.danger, disabled=True, row=1)
-    async def execution_locked(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        pass
+    @discord.ui.button(label="🔓 Approve & Execute", style=discord.ButtonStyle.success, row=1)
+    async def approve_execute(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if not isinstance(interaction.user, discord.Member) or not (interaction.user.guild_permissions.manage_guild or interaction.user.guild_permissions.administrator):
+            await interaction.response.send_message("🔐 Only authorized server managers can approve the embassy reconciliation.", ephemeral=True)
+            return
+        if interaction.guild is None:
+            await interaction.response.send_message("🌿 I need the embassy server context to execute the reviewed plan.", ephemeral=True)
+            return
+        await interaction.response.edit_message(
+            embed=discord.Embed(
+                title="⚠️ Confirm Embassy Reconciliation",
+                description=(
+                    "You have reviewed the complete plan. The next step will make Discord changes.\n\n"
+                    f"**{len(self.report.category_actions)}** category renames\n"
+                    f"**{len(self.report.channel_actions)}** embassy channel renames\n\n"
+                    "**This execution gate does NOT delete roles, archive channels, or change memberships.**\n"
+                    "It will apply only the reviewed category/channel rename actions."
+                ),
+                colour=discord.Colour.orange(),
+            ),
+            view=ReconciliationConfirmView(self.database, self.report, interaction.guild.id),
+        )
 
     @discord.ui.button(label="↩ Back", style=discord.ButtonStyle.secondary, row=2)
     async def back(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
