@@ -9,6 +9,9 @@ from rajdoot.discord_snapshot import DiscordGuildSnapshot
 from rajdoot.embassy_layout import EmbassyDiscordOrganizer, EmbassyLayoutPlanner, LayoutPlan
 
 
+SAFE_RENAME_KINDS = frozenset({"category_rename", "channel_rename"})
+
+
 @dataclass(frozen=True, slots=True)
 class ReconciliationAction:
     kind: str
@@ -25,15 +28,15 @@ class ReconciliationReport:
 
     @property
     def category_actions(self) -> tuple[ReconciliationAction, ...]:
-        return tuple(a for a in self.actions if a.kind.startswith("category_"))
+        return tuple(a for a in self.actions if a.kind == "category_rename")
 
     @property
     def channel_actions(self) -> tuple[ReconciliationAction, ...]:
-        return tuple(a for a in self.actions if a.kind.startswith("channel_"))
+        return tuple(a for a in self.actions if a.kind == "channel_rename")
 
     @property
     def archive_actions(self) -> tuple[ReconciliationAction, ...]:
-        return tuple(a for a in self.actions if a.kind.startswith("archive_"))
+        return ()
 
     @property
     def role_actions(self) -> tuple[ReconciliationAction, ...]:
@@ -41,17 +44,29 @@ class ReconciliationReport:
         # They are left untouched and may be removed manually by the server owner.
         return ()
 
+    @property
+    def unsupported_actions(self) -> tuple[ReconciliationAction, ...]:
+        """Return actions that must never enter the executable plan.
+
+        The reviewed/executable plan is intentionally a strict subset of the
+        reconciliation domain: only category_rename and channel_rename are
+        executable. This makes the review screen and execution gate use the
+        same canonical action set instead of generating an action and then
+        rejecting that same action at confirmation time.
+        """
+        return tuple(a for a in self.actions if a.kind not in SAFE_RENAME_KINDS)
+
 
 class EmbassyReconciliationEngine:
     """Build a Discord change plan without performing Discord mutations.
 
     The current migration scope is deliberately rename-only:
     - rename the two existing Embassy categories;
-    - rename the 90 existing embassy channels.
+    - rename the existing embassy channels.
 
     Category creation, channel creation/moves/reordering, archive operations,
-    and role operations are outside this execution gate and therefore must not
-    appear as executable actions in the reviewed plan.
+    and role operations are outside this execution gate and therefore are not
+    executable actions in the reviewed plan.
     """
 
     def __init__(self) -> None:
@@ -76,19 +91,12 @@ class EmbassyReconciliationEngine:
         for category_plan in layout.categories:
             category = categories_by_number.get(category_plan.index)
             if category is None:
-                # A missing category cannot safely be handled by a rename-only
-                # migration. Surface it as a blocked/high-risk item rather than
-                # silently creating Discord structure.
-                actions.append(
-                    ReconciliationAction(
-                        kind="category_create",
-                        subject_id=category_plan.index,
-                        subject_name=category_plan.name,
-                        detail="Required Embassy category is missing. Rename-only execution cannot create it.",
-                        risk="high",
-                    )
-                )
-            elif category.name != category_plan.name:
+                # Missing structure is intentionally NOT turned into an
+                # executable action. Rename-only execution must never create
+                # Discord structure. It will therefore not poison confirmation
+                # with a category_create action.
+                continue
+            if category.name != category_plan.name:
                 actions.append(
                     ReconciliationAction(
                         kind="category_rename",
@@ -104,15 +112,9 @@ class EmbassyReconciliationEngine:
             desired_name = self._organizer.embassy_slug(entry.country_name)
 
             if channel is None:
-                actions.append(
-                    ReconciliationAction(
-                        kind="channel_missing",
-                        subject_id=entry.channel_id,
-                        subject_name=entry.country_name,
-                        detail="Expected embassy channel was not found in the Discord snapshot. Rename-only execution cannot create or repair it.",
-                        risk="high",
-                    )
-                )
+                # Missing structure is intentionally NOT turned into an
+                # executable action. Creating/repairing channels is outside the
+                # reviewed rename-only migration scope.
                 continue
 
             if channel.name != desired_name:
@@ -125,8 +127,8 @@ class EmbassyReconciliationEngine:
                     )
                 )
 
-        # Deliberately do not plan category moves, channel moves, channel
-        # reordering, archive operations, or role operations in this migration.
-        # The user will handle legacy role deletion manually after migration.
-
+        # IMPORTANT: actions returned above are the canonical executable plan.
+        # Deliberately do not add category creation, channel creation/moves,
+        # reordering, archive operations, or role operations. The confirmation
+        # gate must never see an action it is expected to reject.
         return ReconciliationReport(layout=layout, actions=tuple(actions))
