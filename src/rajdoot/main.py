@@ -4,10 +4,12 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import discord
+from discord import app_commands
 
 from rajdoot.config import settings
+from rajdoot.dashboards import DiplomatDashboardView, GovernmentEmbassyView
 from rajdoot.database import Database
-from rajdoot.dashboards import DiplomatDashboardView, GovernmentDashboardView
+from rajdoot.fixed_dashboards import FixedDiplomatDashboardView, FixedGovernmentDashboardView
 from rajdoot.ui import HomeView, ensure_dashboard_message
 
 
@@ -31,6 +33,17 @@ class HealthHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def do_HEAD(self) -> None:
+        if self.path not in ("/", "/health", "/healthz"):
+            self.send_response(404)
+            self.end_headers()
+            return
+        body = b"ok\n"
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
 
     def log_message(self, format: str, *args: object) -> None:
         logger.info("health | " + format, *args)
@@ -57,12 +70,53 @@ class RajdootBot(discord.Client):
         intents.message_content = True
         super().__init__(intents=intents)
         self.database = database
+        self.tree = app_commands.CommandTree(self)
 
     async def setup_hook(self) -> None:
         await self.database.connect()
+
+        # Persistent views survive process restarts. The two fixed top-level
+        # dashboards use unique custom IDs and never get replaced by button clicks.
         self.add_view(HomeView(self.database))
-        self.add_view(GovernmentDashboardView(self.database))
+        self.add_view(FixedGovernmentDashboardView(self.database))
+        self.add_view(FixedDiplomatDashboardView(self.database))
         self.add_view(DiplomatDashboardView(self.database))
+        self.add_view(GovernmentEmbassyView(self.database))
+
+        guild = discord.Object(id=settings.discord_guild_id)
+
+        async def show_government_dashboard(interaction: discord.Interaction) -> None:
+            if not isinstance(interaction.user, discord.Member) or not (
+                interaction.user.guild_permissions.manage_guild
+                or interaction.user.guild_permissions.administrator
+            ):
+                await interaction.response.send_message(
+                    "🔐 Only authorized government/server managers can open the Government Control Center.",
+                    ephemeral=True,
+                )
+                return
+            await self._show_fixed_dashboard(interaction, "government")
+
+        async def show_diplomat_dashboard(interaction: discord.Interaction) -> None:
+            await self._show_fixed_dashboard(interaction, "diplomat")
+
+        government_command = app_commands.Command(
+            name="government-dashboard",
+            description="Jump to the fixed RAJDOOT Government Control Center.",
+            callback=show_government_dashboard,
+        )
+        government_command.default_permissions = discord.Permissions(manage_guild=True)
+
+        diplomat_command = app_commands.Command(
+            name="diplomat-dashboard",
+            description="Jump to the fixed RAJDOOT Diplomatic Center.",
+            callback=show_diplomat_dashboard,
+        )
+
+        self.tree.add_command(government_command, guild=guild)
+        self.tree.add_command(diplomat_command, guild=guild)
+        await self.tree.sync(guild=guild)
+        logger.info("Guild dashboard commands synchronized")
         logger.info("Supabase PostgreSQL connection established")
 
     async def on_ready(self) -> None:
@@ -74,6 +128,65 @@ class RajdootBot(discord.Client):
         logger.info("Logged in as %s", self.user)
         logger.info("Connected to guild: %s (%s)", guild.name, guild.id)
         await self._ensure_dashboards(guild)
+
+    async def _show_fixed_dashboard(self, interaction: discord.Interaction, kind: str) -> None:
+        guild = interaction.guild
+        if guild is None:
+            await interaction.response.send_message("🌿 This command must be used inside the embassy server.", ephemeral=True)
+            return
+
+        await self._ensure_dashboards(guild)
+        config = await self.database.fetch_discord_configuration(guild.id) or {}
+
+        if kind == "government":
+            channel_id = settings.government_dashboard_channel_id or config.get("government_dashboard_channel_id")
+            message_id = settings.government_dashboard_message_id or config.get("government_dashboard_message_id")
+            label = "Government Control Center"
+        else:
+            channel_id = settings.diplomat_dashboard_channel_id or config.get("diplomat_dashboard_channel_id")
+            message_id = settings.diplomat_dashboard_message_id or config.get("diplomat_dashboard_message_id")
+            label = "Diplomatic Center"
+
+        if not channel_id or not message_id:
+            await interaction.response.send_message(
+                f"⚠️ The fixed {label} could not be located. Check the dashboard channel configuration.",
+                ephemeral=True,
+            )
+            return
+
+        channel = guild.get_channel(int(channel_id))
+        if not isinstance(channel, discord.TextChannel):
+            await interaction.response.send_message("⚠️ The configured dashboard channel is no longer a text channel.", ephemeral=True)
+            return
+
+        try:
+            message = await channel.fetch_message(int(message_id))
+        except (discord.NotFound, discord.HTTPException):
+            await self._ensure_dashboards(guild)
+            config = await self.database.fetch_discord_configuration(guild.id) or {}
+            message_id = (
+                settings.government_dashboard_message_id or config.get("government_dashboard_message_id")
+                if kind == "government"
+                else settings.diplomat_dashboard_message_id or config.get("diplomat_dashboard_message_id")
+            )
+            if not message_id:
+                await interaction.response.send_message("⚠️ RAJDOOT could not restore the fixed dashboard.", ephemeral=True)
+                return
+            message = await channel.fetch_message(int(message_id))
+
+        await interaction.response.send_message(
+            f"📌 **{label}** is fixed and persistent: [Open dashboard]({message.jump_url})",
+            ephemeral=True,
+        )
+
+    async def _pin_dashboard(self, message: discord.Message, label: str) -> None:
+        if message.pinned:
+            return
+        try:
+            await message.pin(reason=f"RAJDOOT fixed {label} dashboard")
+            logger.info("Pinned %s dashboard: %s", label, message.id)
+        except (discord.Forbidden, discord.HTTPException) as exc:
+            logger.warning("Could not pin %s dashboard message %s: %s", label, message.id, exc)
 
     async def _ensure_dashboards(self, guild: discord.Guild) -> None:
         config = await self.database.fetch_discord_configuration(guild.id) or {}
@@ -96,14 +209,16 @@ class RajdootBot(discord.Client):
                         title="🏛️ RAJDOOT Government Control Center",
                         description=(
                             "Welcome back. 🌍\n\n"
-                            "Everything important is gathered here so you can manage diplomacy "
-                            "without hunting through commands or channels."
+                            "This is the **fixed Government Control Center**.\n"
+                            "Its buttons open new messages below, so this dashboard never gets replaced or lost.\n\n"
+                            "Use **/government-dashboard** anytime to jump back here."
                         ),
                         colour=discord.Colour.blurple(),
                     ),
-                    view=GovernmentDashboardView(self.database),
+                    view=FixedGovernmentDashboardView(self.database),
                 )
                 government_message_id = message.id
+                await self._pin_dashboard(message, "Government Control Center")
                 logger.info("Government dashboard ready: %s", message.id)
             else:
                 logger.warning("Government dashboard channel is not a text channel")
@@ -118,14 +233,16 @@ class RajdootBot(discord.Client):
                         title="🌍 RAJDOOT Diplomatic Center",
                         description=(
                             "Welcome, diplomat. ✨\n\n"
-                            "Your embassies, profile and diplomatic tools are all connected here. "
-                            "Choose what you need and let RAJDOOT handle the rest."
+                            "This is the **fixed Diplomatic Center**.\n"
+                            "Its buttons open new messages below, so the main dashboard stays in place.\n\n"
+                            "Use **/diplomat-dashboard** anytime to jump back here."
                         ),
                         colour=discord.Colour.blurple(),
                     ),
-                    view=DiplomatDashboardView(self.database),
+                    view=FixedDiplomatDashboardView(self.database),
                 )
                 diplomat_message_id = message.id
+                await self._pin_dashboard(message, "Diplomatic Center")
                 logger.info("Diplomat dashboard ready: %s", message.id)
             else:
                 logger.warning("Diplomat dashboard channel is not a text channel")
