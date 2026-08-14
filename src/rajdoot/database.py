@@ -56,6 +56,37 @@ class Database:
             )
             return await cursor.fetchone()
 
+    async def update_embassy_layout_state(
+        self,
+        updates: list[tuple[str, int, int, int]],
+    ) -> None:
+        """Persist desired category and channel ordering after Discord reconciliation.
+
+        Each tuple is (embassy_id, category_id, channel_id, display_order).
+        The update is transactional so the database never contains a partially
+        written layout after a successful Discord synchronization.
+        """
+        if not updates:
+            return
+        await self.connect()
+        assert self._connection is not None
+        async with self._connection.transaction():
+            async with self._connection.cursor() as cursor:
+                await cursor.executemany(
+                    """
+                    update embassies
+                    set category_id = %s,
+                        channel_id = %s,
+                        display_order = %s,
+                        updated_at = now()
+                    where id = %s
+                    """,
+                    [
+                        (category_id, channel_id, display_order, embassy_id)
+                        for embassy_id, category_id, channel_id, display_order in updates
+                    ],
+                )
+
     async def fetch_discord_configuration(self, guild_id: int) -> dict[str, Any] | None:
         await self.connect()
         assert self._connection is not None
