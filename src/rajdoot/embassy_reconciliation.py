@@ -43,7 +43,16 @@ class ReconciliationReport:
 
 
 class EmbassyReconciliationEngine:
-    """Build a Discord change plan without performing Discord mutations."""
+    """Build a Discord change plan without performing Discord mutations.
+
+    The current migration scope is deliberately rename-only:
+    - rename the two existing Embassy categories;
+    - rename the 90 existing embassy channels.
+
+    Category creation, channel creation/moves/reordering, archive operations,
+    and role operations are outside this execution gate and therefore must not
+    appear as executable actions in the reviewed plan.
+    """
 
     def __init__(self) -> None:
         self._organizer = EmbassyDiscordOrganizer()
@@ -67,13 +76,16 @@ class EmbassyReconciliationEngine:
         for category_plan in layout.categories:
             category = categories_by_number.get(category_plan.index)
             if category is None:
+                # A missing category cannot safely be handled by a rename-only
+                # migration. Surface it as a blocked/high-risk item rather than
+                # silently creating Discord structure.
                 actions.append(
                     ReconciliationAction(
                         kind="category_create",
                         subject_id=category_plan.index,
                         subject_name=category_plan.name,
-                        detail="Create by cloning the last existing Embassy category permissions.",
-                        risk="medium",
+                        detail="Required Embassy category is missing. Rename-only execution cannot create it.",
+                        risk="high",
                     )
                 )
             elif category.name != category_plan.name:
@@ -89,7 +101,6 @@ class EmbassyReconciliationEngine:
         channels_by_id = {channel.id: channel for channel in snapshot.channels}
         for entry in layout.entries:
             channel = channels_by_id.get(entry.channel_id)
-            target_category = categories_by_number.get(entry.category_index)
             desired_name = self._organizer.embassy_slug(entry.country_name)
 
             if channel is None:
@@ -98,7 +109,7 @@ class EmbassyReconciliationEngine:
                         kind="channel_missing",
                         subject_id=entry.channel_id,
                         subject_name=entry.country_name,
-                        detail="Expected embassy channel was not found in the Discord snapshot.",
+                        detail="Expected embassy channel was not found in the Discord snapshot. Rename-only execution cannot create or repair it.",
                         risk="high",
                     )
                 )
@@ -114,61 +125,8 @@ class EmbassyReconciliationEngine:
                     )
                 )
 
-            if target_category is not None and channel.category_id != target_category.id:
-                actions.append(
-                    ReconciliationAction(
-                        kind="channel_move",
-                        subject_id=channel.id,
-                        subject_name=channel.name,
-                        detail=f"Move to {target_category.name}.",
-                    )
-                )
-
-            desired_position = target_category.position + 1 + entry.position if target_category else None
-            if desired_position is not None and channel.position != desired_position:
-                actions.append(
-                    ReconciliationAction(
-                        kind="channel_reorder",
-                        subject_id=channel.id,
-                        subject_name=channel.name,
-                        detail="Move to the calculated alphabetical position using the final bulk reorder step.",
-                    )
-                )
-
-        active_ids = {entry.channel_id for entry in layout.entries}
-        archived_ids = {
-            int(e["channel_id"])
-            for e in embassies
-            if e.get("status") == "archived" and e.get("channel_id")
-        }
-        embassy_category_ids = {category.id for category in categories_by_number.values()}
-        for channel in snapshot.channels:
-            if channel.category_id not in embassy_category_ids:
-                continue
-            if channel.id in active_ids:
-                continue
-            if channel.id in archived_ids:
-                actions.append(
-                    ReconciliationAction(
-                        kind="archive_channel",
-                        subject_id=channel.id,
-                        subject_name=channel.name,
-                        detail="Move to the Embassy Graveyard during the controlled archive step.",
-                        risk="medium",
-                    )
-                )
-            else:
-                actions.append(
-                    ReconciliationAction(
-                        kind="archive_unmatched_channel",
-                        subject_id=channel.id,
-                        subject_name=channel.name,
-                        detail="Unmatched channel found inside an Embassy category. Review before moving to Embassy Graveyard.",
-                        risk="high",
-                    )
-                )
-
-        # Legacy embassy access roles are deliberately ignored.
-        # No role reads, renames, membership reviews, or deletions are planned.
+        # Deliberately do not plan category moves, channel moves, channel
+        # reordering, archive operations, or role operations in this migration.
+        # The user will handle legacy role deletion manually after migration.
 
         return ReconciliationReport(layout=layout, actions=tuple(actions))
