@@ -3,6 +3,7 @@ from __future__ import annotations
 import discord
 
 from rajdoot.database import Database
+from rajdoot.layout_service import EmbassyLayoutService
 from rajdoot.ui import HomeView, NavigationView, embassy_directory_embed, home_embed
 
 
@@ -21,7 +22,10 @@ class GovernmentDashboardView(discord.ui.View):
     @discord.ui.button(label="Manage Embassies", emoji="🏛️", style=discord.ButtonStyle.primary, custom_id="rajdoot:government:embassies")
     async def embassies(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await interaction.response.defer()
-        await interaction.edit_original_response(embed=await embassy_directory_embed(self.database), view=GovernmentEmbassyView(self.database))
+        await interaction.edit_original_response(
+            embed=await embassy_directory_embed(self.database),
+            view=GovernmentEmbassyView(self.database),
+        )
 
     @discord.ui.button(label="Manage Diplomats", emoji="👥", style=discord.ButtonStyle.primary, custom_id="rajdoot:government:diplomats")
     async def diplomats(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
@@ -55,6 +59,61 @@ class GovernmentDashboardView(discord.ui.View):
 class GovernmentEmbassyView(NavigationView):
     def __init__(self, database: Database) -> None:
         super().__init__(database, timeout=None)
+
+    @discord.ui.button(label="Synchronize Layout", emoji="🧭", style=discord.ButtonStyle.success, custom_id="rajdoot:government:embassies:sync")
+    async def synchronize_layout(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if not isinstance(interaction.user, discord.Member) or not (
+            interaction.user.guild_permissions.manage_guild
+            or interaction.user.guild_permissions.administrator
+        ):
+            await interaction.response.send_message(
+                "🔐 This is a management operation, so only authorized server managers can run it.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.defer()
+        await interaction.edit_original_response(
+            embed=discord.Embed(
+                title="🧭 Embassy Layout Synchronization",
+                description=(
+                    "RAJDOOT is checking the embassy registry and preparing only the Discord changes that are actually needed.\n\n"
+                    "☕ Give me a moment. I will avoid unnecessary shuffling and keep the diplomatic furniture tidy."
+                ),
+                colour=discord.Colour.blurple(),
+            ),
+            view=NavigationView(self.database),
+        )
+
+        try:
+            result = await EmbassyLayoutService(self.database).synchronize(interaction.guild)
+        except Exception:
+            await interaction.edit_original_response(
+                embed=discord.Embed(
+                    title="🌿 The layout needs a little more preparation",
+                    description=(
+                        "RAJDOOT could not safely finish the synchronization this time. "
+                        "Nothing was intentionally forced through. Please check the embassy registry and try again."
+                    ),
+                    colour=discord.Colour.orange(),
+                ),
+                view=NavigationView(self.database),
+            )
+            raise
+
+        await interaction.edit_original_response(
+            embed=discord.Embed(
+                title="✨ Embassy Layout is in order",
+                description=(
+                    f"Categories updated: **{result['categories_changed']}**\n"
+                    f"Embassy channels moved: **{result['channels_moved']}**\n"
+                    f"Embassy names corrected: **{result['channels_renamed']}**\n\n"
+                    "Everything that did not need changing was left peacefully where it was. 🌍"
+                ),
+                colour=discord.Colour.green(),
+            ),
+            view=NavigationView(self.database),
+        )
 
     @discord.ui.button(label="Refresh", emoji="🔄", style=discord.ButtonStyle.secondary, custom_id="rajdoot:government:embassies:refresh")
     async def refresh(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
