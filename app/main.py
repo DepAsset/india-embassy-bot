@@ -8,6 +8,7 @@ from .config import settings
 from .health import start_health_server
 from core.database import Database
 from migration.embassy_seed import seed_legacy_embassies
+from migration.legacy_access import LegacyAccessMigration
 
 # Apply Embassy-flow fixes before any user-facing extensions are loaded.
 import app.embassy_patches  # noqa: F401,E402
@@ -36,6 +37,7 @@ class EmbassyBot(commands.Bot):
         self.health_runner = None
         self.database = Database(settings.mongodb_uri, settings.mongodb_database)
         self.legacy_embassy_migration_done = False
+        self.legacy_access_sync_done = False
         self.dashboards_initialized = False
 
     async def setup_hook(self) -> None:
@@ -73,6 +75,19 @@ class EmbassyBot(commands.Bot):
                     )
             except Exception:
                 logger.exception("Legacy Embassy migration failed")
+
+        if not self.legacy_access_sync_done:
+            try:
+                result = await LegacyAccessMigration(self.database).sync_direct_access(guild)
+                self.legacy_access_sync_done = True
+                logger.info(
+                    "Legacy direct-access sync: status=%s embassies=%s members=%s successful=%s failed=%s missing_roles=%s missing_channels=%s",
+                    result.get("status"), result.get("embassies", 0), result.get("members", 0),
+                    result.get("successful", 0), result.get("failed", 0),
+                    result.get("missing_roles", 0), result.get("missing_channels", 0),
+                )
+            except Exception:
+                logger.exception("Legacy direct-access sync failed")
 
         if not self.dashboards_initialized:
             try:
