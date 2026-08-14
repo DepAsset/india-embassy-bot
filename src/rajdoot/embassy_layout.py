@@ -37,7 +37,8 @@ class EmbassyLayoutPlanner:
     @classmethod
     def plan(cls, embassies: list[dict]) -> LayoutPlan:
         active = [
-            e for e in embassies
+            e
+            for e in embassies
             if e.get("status") == "active" and e.get("channel_id")
         ]
         active.sort(key=lambda e: str(e["country_name"]).strip().casefold())
@@ -73,6 +74,7 @@ class EmbassyLayoutPlanner:
 
         entries: list[LayoutEntry] = []
         category_plans: list[CategoryPlan] = []
+        total_categories = len(categories)
         for category_index, category in enumerate(categories, start=1):
             category_entries: list[LayoutEntry] = []
             for position, embassy in enumerate(category):
@@ -89,18 +91,27 @@ class EmbassyLayoutPlanner:
                 CategoryPlan(
                     index=category_index,
                     entries=tuple(category_entries),
-                    name=cls.category_name(category_index, category_entries),
+                    name=cls.category_name(
+                        category_index,
+                        category_entries,
+                        is_final=(category_index == total_categories),
+                    ),
                 )
             )
 
         return LayoutPlan(categories=tuple(category_plans), entries=tuple(entries))
 
     @staticmethod
-    def category_name(index: int, entries: list[LayoutEntry] | tuple[LayoutEntry, ...]) -> str:
+    def category_name(
+        index: int,
+        entries: list[LayoutEntry] | tuple[LayoutEntry, ...],
+        *,
+        is_final: bool = False,
+    ) -> str:
         if not entries:
             return f"Embassy {index}"
         first = entries[0].country_name.strip()[0].upper()
-        last = entries[-1].country_name.strip()[0].upper()
+        last = "Z" if is_final else entries[-1].country_name.strip()[0].upper()
         return f"Embassy {index} ({first}-{last})"
 
     @classmethod
@@ -160,9 +171,7 @@ class EmbassyDiscordOrganizer:
                 reason="RAJDOOT embassy category placement",
             )
             categories.append(category)
-            categories.sort(
-                key=lambda item: item.position,
-            )
+            categories.sort(key=lambda item: item.position)
 
         return categories
 
@@ -182,7 +191,6 @@ class EmbassyDiscordOrganizer:
         changed_channels = 0
         renamed_channels = 0
 
-        # Rename categories only when the displayed range is actually wrong.
         for category_plan in plan.categories:
             category = categories_by_number.get(category_plan.index)
             if category is None:
@@ -194,7 +202,6 @@ class EmbassyDiscordOrganizer:
                 )
                 changed_categories += 1
 
-        # Move and rename only channels whose desired state differs.
         desired_by_id = {entry.channel_id: entry for entry in plan.entries}
         for channel_id, entry in desired_by_id.items():
             channel = guild.get_channel(channel_id)
@@ -218,7 +225,6 @@ class EmbassyDiscordOrganizer:
                 )
                 changed_channels += 1
 
-        # One bulk position update instead of editing channels individually.
         positions: dict[discord.abc.GuildChannel, int] = {}
         for category_plan in plan.categories:
             category = categories_by_number[category_plan.index]
