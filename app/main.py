@@ -9,7 +9,6 @@ from .config import settings
 from .health import start_health_server
 from core.database import Database
 from migration.embassy_seed import seed_legacy_embassies
-from migration.legacy_access import LegacyAccessMigration
 from migration.rollback_legacy_access import rollback_if_requested
 
 # Apply Embassy-flow fixes before any user-facing extensions are loaded.
@@ -51,6 +50,7 @@ class EmbassyBot(commands.Bot):
         await self.load_extension("app.cogs.embassy_requests")
         await self.load_extension("app.cogs.post_verification")
         await self.load_extension("app.cogs.recovery")
+        await self.load_extension("app.cogs.legacy_cleanup")
 
         guild = discord.Object(id=settings.discord_guild_id)
         self.tree.copy_global_to(guild=guild)
@@ -78,10 +78,10 @@ class EmbassyBot(commands.Bot):
             except Exception:
                 logger.exception("Legacy Embassy registry seed failed")
 
-        # The old direct-permission migration is now retired. Never recreate
-        # direct overrides on startup. If LEGACY_ACCESS_ROLLBACK is enabled in
-        # Render, perform the one-shot restoration of legacy role membership and
-        # remove only the migration-created per-member channel permissions.
+        # The old direct-permission migration is permanently retired. Never
+        # recreate direct member overrides. LEGACY_ACCESS_ROLLBACK is retained
+        # only for the historical snapshot rollback and is no longer required
+        # for the live permission cleanup command.
         rollback_requested = os.getenv("LEGACY_ACCESS_ROLLBACK", "").strip().lower() in {"1", "true", "yes"}
         if rollback_requested:
             try:
