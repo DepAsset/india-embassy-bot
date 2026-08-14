@@ -34,7 +34,7 @@ class EmbassyLayoutPlanner:
     MAX_PER_CATEGORY = 50
     # Legacy servers may have separators, letter ranges, or even an emoji
     # prefix around the category name. The numeric Embassy index is the stable
-    # identity; the reconciliation pass will normalize the full name.
+    # identity; reconciliation normalizes the full name.
     CATEGORY_NUMBER_PATTERN = re.compile(r"\bEmbassy\s*[-#:]?\s*(\d+)\b", re.IGNORECASE)
 
     @classmethod
@@ -130,7 +130,7 @@ class EmbassyLayoutPlanner:
 class EmbassyDiscordOrganizer:
     """Apply only the Discord changes required by a layout plan."""
 
-    CATEGORY_DELAY_SECONDS = 0.35
+    MAX_CHANNELS_PER_CATEGORY = 50
 
     @staticmethod
     def embassy_slug(country_name: str) -> str:
@@ -228,8 +228,7 @@ class EmbassyDiscordOrganizer:
                 changed_categories += 1
 
         # Keep the Embassy categories together and in numeric order while
-        # preserving the location of the existing Embassy block. This avoids
-        # disturbing unrelated server categories more than necessary.
+        # preserving the location of the existing Embassy block.
         if categories:
             embassy_base_position = min(category.position for category in categories)
             category_positions: dict[discord.abc.GuildChannel, int] = {}
@@ -249,14 +248,13 @@ class EmbassyDiscordOrganizer:
                 reordered_categories += len(category_positions)
 
         desired_by_id = {entry.channel_id: entry for entry in plan.entries}
+
+        # Rename first. This operation does not consume category capacity.
         for channel_id, entry in desired_by_id.items():
             channel = guild.get_channel(channel_id)
             if not isinstance(channel, discord.TextChannel):
                 continue
-
-            target_category = categories_by_number[entry.category_index]
             desired_name = self.embassy_slug(entry.country_name)
-
             if channel.name != desired_name:
                 await channel.edit(
                     name=desired_name,
@@ -264,13 +262,85 @@ class EmbassyDiscordOrganizer:
                 )
                 renamed_channels += 1
 
-            if channel.category_id != target_category.id:
-                await channel.edit(
-                    category=target_category,
-                    reason="RAJDOOT embassy category placement",
-                )
-                changed_channels += 1
+        # Discord limits every category to 50 channels. Moving channels one at
+        # a time in arbitrary embassy order can therefore fail when a target
+        # category is temporarily full even though the final layout is valid.
+        # Move channels in a capacity-aware order: always free space from a
+        # category before moving another channel into it.
+        current_counts = {category.id: len(category.channels) for category in categories}
+        desired_category_by_channel = {
+            channel_id: categories_by_number[entry.category_index].id
+            for channel_id, entry in desired_by_id.items()
+        }
 
+        pending_moves: dict[int, tuple[discord.TextChannel, int]] = {}
+        for channel_id, target_category_id in desired_category_by_channel.items():
+            channel = guild.get_channel(channel_id)
+            if not isinstance(channel, discord.TextChannel):
+                continue
+            if channel.category_id != target_category_id:
+                pending_moves[channel_id] = (channel, target_category_id)
+
+        # Validate the final capacity before performing any move. Unrelated
+        # channels are never evicted to make room for Embassy channels.
+        desired_embassy_counts = {category.id: 0 for category in categories}
+        embassy_ids = set(desired_by_id)
+        non_embassy_counts = {category.id: 0 for category in categories}
+        for category in categories:
+            for channel in category.channels:
+                if channel.id in embassy_ids:
+                    desired_entry = desired_by_id.get(channel.id)
+                    if desired_entry is not None:
+                        target_id = categories_by_number[desired_entry.category_index].id
+                        desired_embassy_counts[target_id] += 1
+                else:
+                    non_embassy_counts[category.id] += 1
+
+        for category in categories:
+            desired_total = non_embassy_counts[category.id] + desired_embassy_counts[category.id]
+            if desired_total > self.MAX_CHANNELS_PER_CATEGORY:
+                raise RuntimeError(
+                    f"Embassy layout cannot fit in {category.name}: final channel count "
+                    f"would be {desired_total}, exceeding Discord's {self.MAX_CHANNELS_PER_CATEGORY}-channel category limit. "
+                    "Move unrelated channels out of the Embassy category first."
+                )
+
+        while pending_moves:
+            candidate: tuple[int, discord.TextChannel, int] | None = None
+
+            # Prefer moves whose destination currently has room. When a full
+            # category needs to exchange channels with another category, this
+            # naturally moves the outbound channel first and frees a slot.
+            for channel_id, (channel, target_category_id) in pending_moves.items():
+                if current_counts.get(target_category_id, 0) < self.MAX_CHANNELS_PER_CATEGORY:
+                    candidate = (channel_id, channel, target_category_id)
+                    break
+
+            if candidate is None:
+                raise RuntimeError(
+                    "Embassy channels cannot be safely redistributed because every required "
+                    "destination category is currently full. No temporary category was used, "
+                    "so no unrelated channels were displaced."
+                )
+
+            channel_id, channel, target_category_id = candidate
+            source_category_id = channel.category_id
+            target_category = guild.get_channel(target_category_id)
+            if not isinstance(target_category, discord.CategoryChannel):
+                raise RuntimeError(f"Missing target Embassy category {target_category_id}")
+
+            await channel.edit(
+                category=target_category,
+                reason="RAJDOOT embassy category placement",
+            )
+            if source_category_id in current_counts:
+                current_counts[source_category_id] -= 1
+            current_counts[target_category_id] = current_counts.get(target_category_id, 0) + 1
+            changed_channels += 1
+            del pending_moves[channel_id]
+
+        # Once every channel is in its correct category, perform the final
+        # alphabetical ordering in one Discord position update.
         positions: dict[discord.abc.GuildChannel, int] = {}
         for category_plan in plan.categories:
             category = categories_by_number[category_plan.index]
