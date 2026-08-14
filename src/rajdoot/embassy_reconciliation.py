@@ -101,7 +101,18 @@ class EmbassyReconciliationEngine:
         for category_plan in layout.categories:
             category = categories_by_number.get(category_plan.index)
             if category is None:
-                # Missing categories are not created by reconciliation.
+                actions.append(
+                    ReconciliationAction(
+                        kind="category_missing",
+                        subject_id=f"planned-{category_plan.index}",
+                        subject_name=category_plan.name,
+                        detail=(
+                            f"Required Embassy category #{category_plan.index} was not found. "
+                            "RAJDOOT will not create it during this reconciliation."
+                        ),
+                        risk="high",
+                    )
+                )
                 continue
 
             if category.name != category_plan.name:
@@ -146,8 +157,8 @@ class EmbassyReconciliationEngine:
                 )
 
             if target_category is None:
-                # The missing category is already surfaced by the layout plan;
-                # do not create a repair action that the executor could run.
+                # category_missing already blocks execution; do not emit a
+                # channel move/reorder action that cannot safely be applied.
                 continue
 
             if channel.category_id != target_category.id:
