@@ -1,5 +1,7 @@
 import asyncio
 import logging
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import discord
 
@@ -14,6 +16,36 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
 )
+
+
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self) -> None:
+        if self.path not in ("/", "/health", "/healthz"):
+            self.send_response(404)
+            self.end_headers()
+            return
+
+        body = b"ok\n"
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format: str, *args: object) -> None:
+        logger.info("health | " + format, *args)
+
+
+def start_health_server() -> ThreadingHTTPServer:
+    server = ThreadingHTTPServer((settings.health_host, settings.health_port), HealthHandler)
+    thread = threading.Thread(
+        target=server.serve_forever,
+        name="rajdoot-health",
+        daemon=True,
+    )
+    thread.start()
+    logger.info("Health server listening on %s:%s", settings.health_host, settings.health_port)
+    return server
 
 
 class RajdootBot(discord.Client):
@@ -119,11 +151,14 @@ class RajdootBot(discord.Client):
 
 
 async def run() -> None:
+    health_server = start_health_server()
     database = Database(settings.database_url)
     bot = RajdootBot(database)
     try:
         await bot.start(settings.discord_token)
     finally:
+        health_server.shutdown()
+        health_server.server_close()
         await database.close()
 
 
