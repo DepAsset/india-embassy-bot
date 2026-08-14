@@ -18,8 +18,20 @@ class FixedGovernmentDashboardView(discord.ui.View):
         super().__init__(timeout=None)
         self.database = database
 
-    async def _open(self, interaction: discord.Interaction, *, embed: discord.Embed, view: discord.ui.View | None = None) -> None:
-        await interaction.response.send_message(embed=embed, view=view)
+    async def _open(
+        self,
+        interaction: discord.Interaction,
+        *,
+        embed: discord.Embed,
+        view: discord.ui.View | None = None,
+    ) -> None:
+        # discord.py expects the `view` argument to be omitted when there is
+        # no view. Passing view=None explicitly reaches is_finished() and
+        # crashes inside discord.py.
+        if view is None:
+            await interaction.response.send_message(embed=embed)
+        else:
+            await interaction.response.send_message(embed=embed, view=view)
 
     @discord.ui.button(label="Pending Requests", emoji="📥", style=discord.ButtonStyle.primary, custom_id="rajdoot:fixed:government:requests")
     async def requests(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
@@ -53,8 +65,17 @@ class FixedDiplomatDashboardView(discord.ui.View):
         super().__init__(timeout=None)
         self.database = database
 
-    async def _open(self, interaction: discord.Interaction, *, embed: discord.Embed, view: discord.ui.View | None = None) -> None:
-        await interaction.response.send_message(embed=embed, view=view)
+    async def _open(
+        self,
+        interaction: discord.Interaction,
+        *,
+        embed: discord.Embed,
+        view: discord.ui.View | None = None,
+    ) -> None:
+        if view is None:
+            await interaction.response.send_message(embed=embed)
+        else:
+            await interaction.response.send_message(embed=embed, view=view)
 
     @discord.ui.button(label="My Profile", emoji="👤", style=discord.ButtonStyle.primary, custom_id="rajdoot:fixed:diplomat:profile")
     async def profile(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
