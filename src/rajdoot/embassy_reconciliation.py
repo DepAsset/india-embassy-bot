@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import re
 
 import discord
 
@@ -83,12 +82,15 @@ class EmbassyReconciliationEngine:
         layout = EmbassyLayoutPlanner.plan(embassies)
         actions: list[ReconciliationAction] = []
 
-        categories_by_number = {}
+        categories_by_number: dict[int, object] = {}
         embassy_categories = []
         for category in snapshot.categories:
-            match = re.fullmatch(r"Embassy\s+(\d+)(?:\s+\([A-Z]-[A-Z]\))?", category.name)
-            if match:
-                number = int(match.group(1))
+            number = EmbassyLayoutPlanner.category_number_from_name(category.name)
+            if number is not None:
+                if number in categories_by_number:
+                    raise RuntimeError(
+                        f"Duplicate Embassy category number {number} was found in the Discord snapshot."
+                    )
                 categories_by_number[number] = category
                 embassy_categories.append(category)
 
