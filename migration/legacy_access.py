@@ -14,6 +14,7 @@ from migration.embassy_seed import _read_seed
 from migration.snapshot import MigrationSnapshotService, RoleMembershipSnapshot
 
 MIGRATION_ID = "legacy_embassy_direct_access_v1"
+SYNC_ID = "legacy_embassy_direct_access_sync_v2"
 
 
 class LegacyAccessMigration:
@@ -53,6 +54,49 @@ class LegacyAccessMigration:
                     report["already_assigned"] += 1
         report["role_count"] = len(role_ids)
         return report
+
+    async def sync_direct_access(self, guild: discord.Guild, actor_id: int = 0) -> dict:
+        """Safely convert legacy role membership into direct access without removing roles.
+
+        This is idempotent and intentionally leaves legacy roles in place until an
+        administrator verifies the migration report and explicitly finalizes removal.
+        """
+        state = self.db.collection("migration_state")
+        if await state.find_one({"migration_id": SYNC_ID, "status": "COMPLETED"}):
+            return {"status": "ALREADY_COMPLETED"}
+
+        rows = self.rows()
+        result = {"migration_id": SYNC_ID, "embassies": 0, "members": 0, "successful": 0, "failed": 0, "missing_roles": 0, "missing_channels": 0, "started_at": datetime.now(timezone.utc)}
+        seen: set[tuple[int, str]] = set()
+        for row in rows:
+            role = guild.get_role(int(row["access_role_id"]))
+            channel = guild.get_channel(int(row["channel_id"]))
+            if role is None:
+                result["missing_roles"] += 1
+                continue
+            if not isinstance(channel, discord.TextChannel):
+                result["missing_channels"] += 1
+                continue
+            result["embassies"] += 1
+            for member in list(role.members):
+                key = (member.id, str(row["embassy_id"]))
+                if key in seen:
+                    continue
+                seen.add(key)
+                result["members"] += 1
+                try:
+                    await self.access.assign(member.id, str(row["embassy_id"]), AssignmentType.FOREIGN_DIPLOMAT, AccessSource.MIGRATION, assigned_by=actor_id)
+                    await self.projector.grant(guild, member.id, str(row["embassy_id"]), actor_id, "Legacy Embassy role migration to direct access")
+                    await self.projector.ensure_role(guild, member.id, __import__("app.config", fromlist=["settings"]).settings.role_foreign_diplomat_id, "Legacy Embassy role migration")
+                    result["successful"] += 1
+                except Exception:
+                    result["failed"] += 1
+
+        result["completed_at"] = datetime.now(timezone.utc)
+        result["status"] = "COMPLETED" if result["failed"] == 0 and result["missing_roles"] == 0 and result["missing_channels"] == 0 else "COMPLETED_WITH_FAILURES"
+        await state.insert_one(result)
+        await self.audit.log(action="LEGACY_DIRECT_ACCESS_SYNC_COMPLETED", actor_id=actor_id, metadata={k: v for k, v in result.items() if k not in {"started_at", "completed_at"}})
+        return result
 
     async def execute(self, guild: discord.Guild, actor_id: int, *, confirm_token: str) -> dict:
         if confirm_token != "MIGRATE-DIRECT-ACCESS":
