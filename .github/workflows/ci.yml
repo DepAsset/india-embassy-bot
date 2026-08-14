@@ -8,6 +8,9 @@ on:
 permissions:
   contents: read
 
+env:
+  PYTHONPATH: .
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -18,4 +21,4 @@ jobs:
           python-version: "3.13"
       - run: pip install -r requirements.txt
       - run: python -m compileall app core access approval embassy migration verification
-      - run: pytest -q
+      - run: python -m pytest -q
