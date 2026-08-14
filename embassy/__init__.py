@@ -1,1 +1,0 @@
-"""Embassy domain compatibility package."""
