@@ -30,68 +30,17 @@ def test_planner_keeps_letter_groups_together() -> None:
     assert second.entries[0].country_name.startswith("C")
 
 
-def test_two_category_layout_uses_m_to_z_for_final_category() -> None:
+def test_final_category_uses_z_as_its_upper_boundary() -> None:
     names = [
-        "Afghanistan",
-        "Albania",
-        "Algeria",
-        "Argentina",
-        "Australia",
-        "Austria",
-        "Belgium",
-        "Brazil",
-        "Canada",
-        "Chile",
-        "China",
-        "Denmark",
-        "Egypt",
-        "France",
-        "Germany",
-        "Greece",
-        "India",
-        "Indonesia",
-        "Iran",
-        "Iraq",
-        "Ireland",
-        "Italy",
-        "Japan",
-        "Kenya",
-        "Kuwait",
-        "Laos",
-        "Lebanon",
-        "Malaysia",
-        "Mexico",
-        "Moldova",
-        "Mongolia",
-        "Morocco",
-        "Myanmar",
-        "Nepal",
-        "Netherlands",
-        "Nigeria",
-        "Norway",
-        "Pakistan",
-        "Peru",
-        "Poland",
-        "Portugal",
-        "Qatar",
-        "Romania",
-        "Russia",
-        "Serbia",
-        "Singapore",
-        "Spain",
-        "Sweden",
-        "Switzerland",
-        "Thailand",
-        "Tunisia",
-        "Turkiye",
-        "Ukraine",
-        "United Kingdom",
-        "United States",
-        "Uruguay",
-        "Uzbekistan",
-        "Venezuela",
-        "Vietnam",
-        "Yemen",
+        "Afghanistan", "Albania", "Algeria", "Argentina", "Australia", "Austria",
+        "Belgium", "Brazil", "Canada", "Chile", "China", "Denmark", "Egypt",
+        "France", "Germany", "Greece", "India", "Indonesia", "Iran", "Iraq",
+        "Ireland", "Italy", "Japan", "Kenya", "Kuwait", "Laos", "Lebanon",
+        "Malaysia", "Mexico", "Moldova", "Mongolia", "Morocco", "Myanmar", "Nepal",
+        "Netherlands", "Nigeria", "Norway", "Pakistan", "Peru", "Poland", "Portugal",
+        "Qatar", "Romania", "Russia", "Serbia", "Singapore", "Spain", "Sweden",
+        "Switzerland", "Thailand", "Tunisia", "Turkiye", "Ukraine", "United Kingdom",
+        "United States", "Uruguay", "Uzbekistan", "Venezuela", "Vietnam", "Yemen",
     ]
     embassies = [
         {
@@ -105,8 +54,9 @@ def test_two_category_layout_uses_m_to_z_for_final_category() -> None:
 
     plan = EmbassyLayoutPlanner.plan(embassies)
 
-    assert plan.categories[0].name == "Embassy 1 (A-I)"
-    assert plan.categories[-1].name == "Embassy 2 (J-Z)"
+    assert len(plan.categories) == 2
+    assert plan.categories[0].name == "Embassy 1 (A-T)"
+    assert plan.categories[1].name == "Embassy 2 (U-Z)"
 
 
 def test_planner_ignores_archived_embassies() -> None:
