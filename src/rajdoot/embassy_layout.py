@@ -32,7 +32,10 @@ class EmbassyLayoutPlanner:
     """Calculate the desired embassy layout without touching Discord."""
 
     MAX_PER_CATEGORY = 50
-    CATEGORY_PATTERN = re.compile(r"^Embassy\s+(\d+)(?:\s+\([A-Z]-[A-Z]\))?$")
+    # Legacy servers may have separators, letter ranges, or even an emoji
+    # prefix around the category name. The numeric Embassy index is the stable
+    # identity; the reconciliation pass will normalize the full name.
+    CATEGORY_NUMBER_PATTERN = re.compile(r"\bEmbassy\s*[-#:]?\s*(\d+)\b", re.IGNORECASE)
 
     @classmethod
     def plan(cls, embassies: list[dict]) -> LayoutPlan:
@@ -115,9 +118,13 @@ class EmbassyLayoutPlanner:
         return f"Embassy {index} ({first}-{last})"
 
     @classmethod
-    def discord_category_number(cls, category: discord.CategoryChannel) -> int | None:
-        match = cls.CATEGORY_PATTERN.fullmatch(category.name)
+    def category_number_from_name(cls, name: str) -> int | None:
+        match = cls.CATEGORY_NUMBER_PATTERN.search(name)
         return int(match.group(1)) if match else None
+
+    @classmethod
+    def discord_category_number(cls, category: discord.CategoryChannel) -> int | None:
+        return cls.category_number_from_name(category.name)
 
 
 class EmbassyDiscordOrganizer:
@@ -141,7 +148,10 @@ class EmbassyDiscordOrganizer:
         ]
         return sorted(
             categories,
-            key=lambda category: EmbassyLayoutPlanner.discord_category_number(category) or 0,
+            key=lambda category: (
+                EmbassyLayoutPlanner.discord_category_number(category) or 0,
+                category.position,
+            ),
         )
 
     async def ensure_categories(
