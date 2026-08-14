@@ -65,9 +65,6 @@ class ReconciliationReviewView(discord.ui.View):
             "channel_missing": "❗",
             "archive_channel": "🪦",
             "archive_unmatched_channel": "⚠️",
-            "role_delete_candidate": "🗑️",
-            "role_rename_candidate": "✏️",
-            "role_missing": "❗",
         }.get(kind, "•")
 
     def embed(self) -> discord.Embed:
@@ -78,7 +75,8 @@ class ReconciliationReviewView(discord.ui.View):
             title="🔎 Embassy Reconciliation Plan",
             description=(
                 "This is a **read-only preview**. Nothing has been changed in Discord.\n\n"
-                "RAJDOOT is keeping execution locked until every important item has been reviewed."
+                "RAJDOOT is keeping execution locked until the planned embassy layout has been reviewed.\n\n"
+                "Legacy embassy access roles are **out of scope** and will not be changed by this migration."
             ),
             colour=discord.Colour.blurple(),
         )
@@ -97,7 +95,7 @@ class ReconciliationReviewView(discord.ui.View):
                 f"Categories: **{len(self.report.category_actions)}**\n"
                 f"Channels: **{len(self.report.channel_actions)}**\n"
                 f"Archive: **{len(self.report.archive_actions)}**\n"
-                f"Roles: **{len(self.report.role_actions)}**"
+                "Legacy roles: **Ignored**"
             ),
             inline=True,
         )
@@ -161,9 +159,8 @@ class GovernmentEmbassyView(NavigationView):
         )
         try:
             embassies = await self.database.fetch_all_embassies()
-            legacy_roles = await self.database.fetch_legacy_roles()
             snapshot = DiscordSnapshotBuilder.build(interaction.guild)
-            report = EmbassyReconciliationEngine().build(interaction.guild, snapshot, embassies, legacy_roles)
+            report = EmbassyReconciliationEngine().build(interaction.guild, snapshot, embassies)
         except Exception:
             await interaction.edit_original_response(
                 embed=discord.Embed(
@@ -185,7 +182,7 @@ class GovernmentEmbassyView(NavigationView):
             colour=discord.Colour.blurple(),
         )
         embed.add_field(name="🏛️ Desired Layout", value=f"**{len(report.layout.entries)}** active embassies\n**{len(report.layout.categories)}** Embassy categories\n" + "\n".join(f"• {c.name}" for c in report.layout.categories), inline=False)
-        embed.add_field(name="📊 Planned Changes", value=f"Category changes: **{len(report.category_actions)}**\nChannel changes: **{len(report.channel_actions)}**\nArchive candidates: **{len(report.archive_actions)}**\nRole actions: **{len(report.role_actions)}**", inline=True)
+        embed.add_field(name="📊 Planned Changes", value=f"Category changes: **{len(report.category_actions)}**\nChannel changes: **{len(report.channel_actions)}**\nArchive candidates: **{len(report.archive_actions)}**\nLegacy roles: **Ignored**", inline=True)
         high_risk = sum(1 for action in report.actions if action.risk == "high")
         embed.add_field(name="🛡️ Safety", value=f"High-risk items: **{high_risk}**\nNo writes performed\nExecution remains locked", inline=True)
         return embed
