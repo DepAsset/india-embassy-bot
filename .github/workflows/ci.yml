@@ -18,7 +18,4 @@ jobs:
           python-version: "3.13"
       - run: pip install -r requirements.txt
       - run: python -m compileall app core access approval embassy migration verification
-      # pytest exits with code 5 when the repository currently has no test
-      # files. Treat that specific condition as a successful smoke-check while
-      # preserving real test failures.
-      - run: pytest -q || test $? -eq 5
+      - run: pytest -q
