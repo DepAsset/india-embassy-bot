@@ -41,6 +41,33 @@ class Database:
             )
             return list(await cursor.fetchall())
 
+    async def fetch_all_embassies(self) -> list[dict[str, Any]]:
+        await self.connect()
+        assert self._connection is not None
+        async with self._connection.cursor() as cursor:
+            await cursor.execute(
+                """
+                select id, country_id, country_name, channel_id, channel_name,
+                       category_id, status, display_order
+                from embassies
+                order by status, display_order nulls last, country_name asc
+                """
+            )
+            return list(await cursor.fetchall())
+
+    async def fetch_legacy_roles(self) -> list[dict[str, Any]]:
+        await self.connect()
+        assert self._connection is not None
+        async with self._connection.cursor() as cursor:
+            await cursor.execute(
+                """
+                select role_id, role_name, embassy_id, disposition, notes
+                from embassy_legacy_roles
+                order by role_name asc, role_id asc
+                """
+            )
+            return list(await cursor.fetchall())
+
     async def fetch_embassy(self, embassy_id: str) -> dict[str, Any] | None:
         await self.connect()
         assert self._connection is not None
@@ -60,12 +87,7 @@ class Database:
         self,
         updates: list[tuple[str, int, int, int]],
     ) -> None:
-        """Persist desired category and channel ordering after Discord reconciliation.
-
-        Each tuple is (embassy_id, category_id, channel_id, display_order).
-        The update is transactional so the database never contains a partially
-        written layout after a successful Discord synchronization.
-        """
+        """Persist desired category and channel ordering after Discord reconciliation."""
         if not updates:
             return
         await self.connect()
