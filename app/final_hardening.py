@@ -103,7 +103,6 @@ async def _safe_embassy_decide(self: EmbassyFlow, interaction: discord.Interacti
             await interaction.followup.send("Discord access could not be granted. The approval was rolled back and the request remains open.", ephemeral=True)
             return
         await self._log_channel(f"✅ **Embassy Access Approved**\n**Embassy:** {embassy.country_name}\n**Applicant:** <@{applicant_id}>\n**Approved By:** {interaction.user.mention}")
-        await _dm_applicant(self, interaction.guild, applicant_id, approved=True, embassy_name=embassy.country_name)
         await self._close_request_thread(interaction.guild, request, f"Your Embassy access request has been **approved**.\n\n**Embassy:** {embassy.country_name}\n**Approved by:** {interaction.user.mention}\n\nYour access has been granted. Welcome, diplomat. 🇮🇳")
     else:
         await self._log_channel(f"❌ **Embassy Access Declined**\n**Embassy:** {embassy.country_name}\n**Applicant:** <@{applicant_id}>\n**Declined By:** {interaction.user.mention}")
