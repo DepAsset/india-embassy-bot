@@ -85,11 +85,54 @@ async def ensure_dashboard_message(
     embed: discord.Embed,
     view: discord.ui.View,
 ) -> discord.Message:
+    """Reuse one RAJDOOT dashboard message and clean duplicate RAJDOOT copies."""
+    title = embed.title
+    selected: discord.Message | None = None
+    recent_matches: list[discord.Message] = []
+
     if message_id:
         try:
-            message = await channel.fetch_message(message_id)
-            await message.edit(embed=embed, view=view)
-            return message
-        except discord.NotFound:
-            pass
+            selected = await channel.fetch_message(message_id)
+        except (discord.NotFound, discord.HTTPException):
+            selected = None
+
+    # If the stored message is unavailable, inspect only a small recent window.
+    # This avoids repeated broad history scans and keeps Discord API usage low.
+    if selected is None or not _is_matching_dashboard(selected, title):
+        async for message in channel.history(limit=25):
+            if _is_matching_dashboard(message, title):
+                recent_matches.append(message)
+
+        if recent_matches:
+            selected = next(
+                (message for message in recent_matches if message.id == message_id),
+                recent_matches[0],
+            )
+    else:
+        # We still need one bounded scan to clean duplicates that may have been
+        # created by earlier deployments before dashboard IDs were persisted.
+        async for message in channel.history(limit=25):
+            if _is_matching_dashboard(message, title):
+                recent_matches.append(message)
+
+    if selected is not None and _is_matching_dashboard(selected, title):
+        await selected.edit(embed=embed, view=view)
+
+        # Only delete duplicate RAJDOOT dashboard copies with the same title.
+        # Legacy/unrelated messages are intentionally untouched.
+        for duplicate in recent_matches:
+            if duplicate.id == selected.id:
+                continue
+            try:
+                await duplicate.delete()
+            except (discord.NotFound, discord.HTTPException):
+                pass
+        return selected
+
     return await channel.send(embed=embed, view=view)
+
+
+def _is_matching_dashboard(message: discord.Message, title: str | None) -> bool:
+    if not message.author.bot or not message.embeds or not title:
+        return False
+    return message.embeds[0].title == title
