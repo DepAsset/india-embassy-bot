@@ -15,6 +15,7 @@ import app.integration_patches  # noqa: F401,E402
 import app.embassy_user_fixes  # noqa: F401,E402
 import app.safety_patches  # noqa: F401,E402
 import app.integration_completion  # noqa: F401,E402
+import app.final_hardening  # noqa: F401,E402
 import app.otp_ui_fix  # noqa: F401,E402
 from app.integration_completion import restore_surprise_views  # noqa: E402
 
@@ -36,20 +37,10 @@ class EmbassyBot(commands.Bot):
         self.legacy_embassy_migration_done = False
 
     async def setup_hook(self) -> None:
-        # Bind Render's health port first so the Web Service has a live listener
-        # even while MongoDB and Discord extensions are initializing.
         self.health_runner = await start_health_server(settings.health_host, settings.health_port)
-
         await self.database.initialize()
-
-        # Restore the one-use welcome surprise buttons that belong to existing
-        # accepted diplomats. Used surprises are registered as disabled views.
         await restore_surprise_views(self)
 
-        # Load the dependency container first, then the user-facing request
-        # controls, then durable post-verification and recovery handlers.
-        # Dashboard wiring is intentionally kept in the real cog/view modules;
-        # do not import legacy dashboard monkey-patch modules at startup.
         await self.load_extension("app.cogs.complete")
         await self.load_extension("app.cogs.embassy_requests")
         await self.load_extension("app.cogs.post_verification")
