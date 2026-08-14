@@ -17,6 +17,7 @@ import app.safety_patches  # noqa: F401,E402
 import app.integration_completion  # noqa: F401,E402
 import app.final_hardening  # noqa: F401,E402
 import app.otp_ui_fix  # noqa: F401,E402
+from app.cogs.dashboards import ensure_dashboards  # noqa: E402
 from app.integration_completion import restore_surprise_views  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
@@ -35,6 +36,7 @@ class EmbassyBot(commands.Bot):
         self.health_runner = None
         self.database = Database(settings.mongodb_uri, settings.mongodb_database)
         self.legacy_embassy_migration_done = False
+        self.dashboards_initialized = False
 
     async def setup_hook(self) -> None:
         self.health_runner = await start_health_server(settings.health_host, settings.health_port)
@@ -71,6 +73,14 @@ class EmbassyBot(commands.Bot):
                     )
             except Exception:
                 logger.exception("Legacy Embassy migration failed")
+
+        if not self.dashboards_initialized:
+            try:
+                await ensure_dashboards(self, guild)
+                self.dashboards_initialized = True
+                logger.info("Persistent Embassy dashboards initialized")
+            except Exception:
+                logger.exception("Dashboard initialization failed")
 
     async def close(self) -> None:
         if self.health_runner is not None:
