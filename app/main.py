@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 
 import discord
 from discord.ext import commands
@@ -9,6 +10,7 @@ from .health import start_health_server
 from core.database import Database
 from migration.embassy_seed import seed_legacy_embassies
 from migration.legacy_access import LegacyAccessMigration
+from migration.rollback_legacy_access import rollback_if_requested
 
 # Apply Embassy-flow fixes before any user-facing extensions are loaded.
 import app.embassy_patches  # noqa: F401,E402
@@ -70,24 +72,26 @@ class EmbassyBot(commands.Bot):
                 self.legacy_embassy_migration_done = True
                 if result["status"]:
                     logger.info(
-                        "Legacy Embassy migration completed: inserted=%s updated=%s missing_channels=%s",
+                        "Legacy Embassy registry seeded: inserted=%s updated=%s missing_channels=%s",
                         result["inserted"], result["updated"], result["missing_channels"],
                     )
             except Exception:
-                logger.exception("Legacy Embassy migration failed")
+                logger.exception("Legacy Embassy registry seed failed")
 
-        if not self.legacy_access_sync_done:
+        # The old direct-permission migration is now retired. Never recreate
+        # direct overrides on startup. If LEGACY_ACCESS_ROLLBACK is enabled in
+        # Render, perform the one-shot restoration of legacy role membership and
+        # remove only the migration-created per-member channel permissions.
+        rollback_requested = os.getenv("LEGACY_ACCESS_ROLLBACK", "").strip().lower() in {"1", "true", "yes"}
+        if rollback_requested:
             try:
-                result = await LegacyAccessMigration(self.database).sync_direct_access(guild)
-                self.legacy_access_sync_done = True
-                logger.info(
-                    "Legacy direct-access sync: status=%s embassies=%s members=%s successful=%s failed=%s missing_roles=%s missing_channels=%s",
-                    result.get("status"), result.get("embassies", 0), result.get("members", 0),
-                    result.get("successful", 0), result.get("failed", 0),
-                    result.get("missing_roles", 0), result.get("missing_channels", 0),
-                )
+                result = await rollback_if_requested(self.database, guild)
+                logger.info("Legacy Embassy direct-access rollback result: %s", result)
             except Exception:
-                logger.exception("Legacy direct-access sync failed")
+                logger.exception("Legacy Embassy direct-access rollback failed")
+        elif not self.legacy_access_sync_done:
+            logger.info("Legacy direct-access migration is retired; no direct permissions will be recreated")
+            self.legacy_access_sync_done = True
 
         if not self.dashboards_initialized:
             try:
