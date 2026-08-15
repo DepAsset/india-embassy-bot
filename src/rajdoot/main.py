@@ -9,9 +9,10 @@ from discord import app_commands
 from rajdoot.config import settings
 from rajdoot.dashboards import DiplomatDashboardView, GovernmentEmbassyView
 from rajdoot.database import Database
+from rajdoot.embassy_access import EmbassyManagementCommands
 from rajdoot.embassy_members import EmbassyMemberImporter
+from rajdoot.embassy_workflow import EmbassyRequestCommands, PersistentApprovalView
 from rajdoot.fixed_dashboards import FixedDiplomatDashboardView, FixedGovernmentDashboardView
-from rajdoot.request_commands import EmbassyRequestCommands
 from rajdoot.ui import HomeView, ensure_dashboard_message
 
 
@@ -44,7 +45,10 @@ class HealthHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def log_message(self, format: str, *args: object) -> None:
-        logger.info("health | " + format, *args)
+        # Render health probes are expected infrastructure traffic. Keep the
+        # application log focused on bot/database events instead of emitting a
+        # line every five seconds.
+        return
 
 
 def start_health_server() -> ThreadingHTTPServer:
@@ -66,6 +70,33 @@ class RajdootBot(discord.Client):
         self.database = database
         self.tree = app_commands.CommandTree(self)
 
+    async def _register_pending_approval_views(self) -> None:
+        connection = self.database._connection
+        if connection is None:
+            return
+        async with connection.cursor() as cursor:
+            await cursor.execute(
+                """
+                select id, applicant_discord_id, flow_stage
+                from embassy_requests
+                where request_status = 'pending_approval'
+                  and approval_message_id is not null
+                  and target_embassy_id is not null
+                """
+            )
+            rows = await cursor.fetchall()
+        for row in rows:
+            self.add_view(
+                PersistentApprovalView(
+                    self.database,
+                    str(row["id"]),
+                    int(row["applicant_discord_id"]),
+                    own_country=row["flow_stage"] == "awaiting_embassy_approval",
+                )
+            )
+        if rows:
+            logger.info("Registered %s persistent embassy approval views", len(rows))
+
     async def setup_hook(self) -> None:
         await self.database.connect()
         self.add_view(HomeView(self.database))
@@ -73,6 +104,7 @@ class RajdootBot(discord.Client):
         self.add_view(FixedDiplomatDashboardView(self.database))
         self.add_view(DiplomatDashboardView(self.database))
         self.add_view(GovernmentEmbassyView(self.database))
+        await self._register_pending_approval_views()
 
         guild = discord.Object(id=settings.discord_guild_id)
 
@@ -96,28 +128,21 @@ class RajdootBot(discord.Client):
             if interaction.guild is None:
                 await interaction.response.send_message("🌿 This command must be used inside the embassy server.", ephemeral=True)
                 return
-
             await interaction.response.defer(ephemeral=True, thinking=True)
             try:
-                # First run: discover current members from all legacy embassy
-                # access roles. Later runs: the registry is canonical and role
-                # memberships are not consulted again.
                 await interaction.guild.chunk(cache=True)
                 result = await EmbassyMemberImporter().import_current_members(interaction.guild, self.database)
             except Exception:
                 logger.exception("Embassy member import/hardcode failed")
                 await interaction.followup.send(
-                    "⚠️ I could not safely complete the embassy member hardcoding. "
-                    "No embassy roles were deleted or modified. If the registry was not yet frozen, it remains retryable. "
+                    "⚠️ I could not safely complete the embassy member hardcoding. No embassy roles were deleted or modified. "
                     "Please check the Render logs before trying again.",
                     ephemeral=True,
                 )
                 return
-
             status_title = "🔒 **Embassy Member Registry + Discord Access Frozen**"
             if result.already_frozen:
                 status_title = "🔒 **Embassy Member Registry Verified + Discord Access Re-applied**"
-
             await interaction.followup.send(
                 f"{status_title}\n\n"
                 f"🏛️ Embassies scanned: **{result.embassies_scanned}**\n"
@@ -129,30 +154,20 @@ class RajdootBot(discord.Client):
                 f"🔐 Direct Discord member permissions applied: **{result.permissions_applied}**\n"
                 f"⚠️ Permission failures: **{result.permission_failures}**\n"
                 f"⚠️ Embassies without a matched access role: **{result.unmatched_embassies}**\n\n"
-                "Multiple legacy access roles for the same embassy are merged into one canonical member set. "
-                "Classification is embassy access + Indian Citizen = Indian Ambassador; otherwise Foreign Diplomat. "
-                "The Supabase registry is the canonical baseline. Discord hardcoding uses direct member channel permissions, so later removal/deletion of the old embassy access roles does NOT remove the stored members' embassy access. "
-                "This command never deletes, removes, archives, or modifies the legacy embassy roles.",
+                "The Supabase registry is the canonical baseline. Direct member permissions survive deletion of legacy embassy access roles. "
+                "This command never deletes or modifies the legacy embassy roles.",
                 ephemeral=True,
             )
 
         government_command = app_commands.Command(
-            name="government-dashboard",
-            description="Jump to the fixed RAJDOOT Government Control Center.",
-            callback=show_government_dashboard,
+            name="government-dashboard", description="Jump to the fixed RAJDOOT Government Control Center.", callback=show_government_dashboard
         )
         government_command.default_permissions = discord.Permissions(manage_guild=True)
-
         diplomat_command = app_commands.Command(
-            name="diplomat-dashboard",
-            description="Jump to the fixed RAJDOOT Diplomatic Center.",
-            callback=show_diplomat_dashboard,
+            name="diplomat-dashboard", description="Jump to the fixed RAJDOOT Diplomatic Center.", callback=show_diplomat_dashboard
         )
-
         member_import_command = app_commands.Command(
-            name="import-embassy-members",
-            description="Capture, merge, freeze, and hardcode current embassy members without touching legacy roles.",
-            callback=import_embassy_members,
+            name="import-embassy-members", description="Capture, merge, freeze, and hardcode current embassy members without touching legacy roles.", callback=import_embassy_members
         )
         member_import_command.default_permissions = discord.Permissions(manage_guild=True)
 
@@ -160,6 +175,7 @@ class RajdootBot(discord.Client):
         self.tree.add_command(diplomat_command, guild=guild)
         self.tree.add_command(member_import_command, guild=guild)
         self.tree.add_command(EmbassyRequestCommands(self.database), guild=guild)
+        self.tree.add_command(EmbassyManagementCommands(self.database), guild=guild)
         await self.tree.sync(guild=guild)
         logger.info("Guild dashboard commands synchronized")
         logger.info("Supabase PostgreSQL connection established")
@@ -189,7 +205,7 @@ class RajdootBot(discord.Client):
             message_id = settings.diplomat_dashboard_message_id or config.get("diplomat_dashboard_message_id")
             label = "Diplomatic Center"
         if not channel_id or not message_id:
-            await interaction.response.send_message(f"⚠️ The fixed {label} could not be located. Check the dashboard channel configuration.", ephemeral=True)
+            await interaction.response.send_message(f"⚠️ The fixed {label} could not be located.", ephemeral=True)
             return
         channel = guild.get_channel(int(channel_id))
         if not isinstance(channel, discord.TextChannel):
@@ -200,11 +216,7 @@ class RajdootBot(discord.Client):
         except (discord.NotFound, discord.HTTPException):
             await self._ensure_dashboards(guild)
             config = await self.database.fetch_discord_configuration(guild.id) or {}
-            message_id = (
-                settings.government_dashboard_message_id or config.get("government_dashboard_message_id")
-                if kind == "government"
-                else settings.diplomat_dashboard_message_id or config.get("diplomat_dashboard_message_id")
-            )
+            message_id = (settings.government_dashboard_message_id or config.get("government_dashboard_message_id")) if kind == "government" else (settings.diplomat_dashboard_message_id or config.get("diplomat_dashboard_message_id"))
             if not message_id:
                 await interaction.response.send_message("⚠️ RAJDOOT could not restore the fixed dashboard.", ephemeral=True)
                 return
@@ -216,7 +228,6 @@ class RajdootBot(discord.Client):
             return
         try:
             await message.pin(reason=f"RAJDOOT fixed {label} dashboard")
-            logger.info("Pinned %s dashboard: %s", label, message.id)
         except (discord.Forbidden, discord.HTTPException) as exc:
             logger.warning("Could not pin %s dashboard message %s: %s", label, message.id, exc)
 
@@ -228,41 +239,26 @@ class RajdootBot(discord.Client):
         request_category_id = settings.request_category_id or config.get("request_category_id")
         government_message_id = settings.government_dashboard_message_id or config.get("government_dashboard_message_id")
         diplomat_message_id = settings.diplomat_dashboard_message_id or config.get("diplomat_dashboard_message_id")
-
         if government_channel_id:
             channel = guild.get_channel(int(government_channel_id))
             if isinstance(channel, discord.TextChannel):
                 message = await ensure_dashboard_message(
-                    channel=channel,
-                    message_id=int(government_message_id) if government_message_id else None,
-                    embed=discord.Embed(
-                        title="🏛️ RAJDOOT Government Control Center",
-                        description="Welcome back. 🌍\n\nThis is the **fixed Government Control Center**.\nIts buttons open new messages below, so this dashboard never gets replaced or lost.\n\nUse **/government-dashboard** anytime to jump back here.",
-                        colour=discord.Colour.blurple(),
-                    ),
+                    channel=channel, message_id=int(government_message_id) if government_message_id else None,
+                    embed=discord.Embed(title="🏛️ RAJDOOT Government Control Center", description="Welcome back. 🌍\n\nThis is the **fixed Government Control Center**. Its buttons open new messages below, so this dashboard never gets replaced or lost.\n\nUse **/government-dashboard** anytime to jump back here.", colour=discord.Colour.blurple()),
                     view=FixedGovernmentDashboardView(self.database),
                 )
                 government_message_id = message.id
                 await self._pin_dashboard(message, "Government Control Center")
-                logger.info("Government dashboard ready: %s", message.id)
-
         if diplomat_channel_id:
             channel = guild.get_channel(int(diplomat_channel_id))
             if isinstance(channel, discord.TextChannel):
                 message = await ensure_dashboard_message(
-                    channel=channel,
-                    message_id=int(diplomat_message_id) if diplomat_message_id else None,
-                    embed=discord.Embed(
-                        title="🌍 RAJDOOT Diplomatic Center",
-                        description="Welcome, diplomat. ✨\n\nThis is the **fixed Diplomatic Center**.\nIts buttons open new messages below, so the main dashboard stays in place.\n\nUse **/diplomat-dashboard** anytime to jump back here.",
-                        colour=discord.Colour.blurple(),
-                    ),
+                    channel=channel, message_id=int(diplomat_message_id) if diplomat_message_id else None,
+                    embed=discord.Embed(title="🌍 RAJDOOT Diplomatic Center", description="Welcome, diplomat. ✨\n\nThis is the **fixed Diplomatic Center**. Its buttons open new messages below, so the main dashboard stays in place.\n\nUse **/diplomat-dashboard** anytime to jump back here.", colour=discord.Colour.blurple()),
                     view=FixedDiplomatDashboardView(self.database),
                 )
                 diplomat_message_id = message.id
                 await self._pin_dashboard(message, "Diplomatic Center")
-                logger.info("Diplomat dashboard ready: %s", message.id)
-
         await self.database.upsert_discord_configuration(
             guild_id=guild.id,
             request_category_id=int(request_category_id) if request_category_id else None,
@@ -286,5 +282,4 @@ async def _run() -> None:
 
 
 def main() -> None:
-    """Console-script entry point for the RAJDOOT bot."""
     asyncio.run(_run())
