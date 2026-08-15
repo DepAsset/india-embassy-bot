@@ -18,19 +18,16 @@ class EmbassyMemberImportResult:
     indian_ambassadors: int
     unchanged: int
     unmatched_embassies: int
+    already_frozen: bool = False
 
 
 class EmbassyMemberImporter:
-    """Freeze the current embassy-role membership into the Supabase registry.
+    """Create the one-time, immutable embassy-member baseline.
 
-    Every person holding an embassy-specific access role is registered as one of:
-    - foreign_diplomat: embassy access role, but no Indian Citizen role
-    - indian_ambassador: embassy access role AND Indian Citizen role
-
-    The legacy Discord access role is used only to discover the current baseline.
-    Once imported, the registry assignment is independent of that role. In
-    particular, the importer never deactivates a stored member just because the
-    legacy role is later removed or deleted.
+    Before the registry is frozen, Discord embassy access roles are used only as
+    the discovery source for the current assignments. Once frozen, this command
+    never reads embassy roles again and never updates/deactivates the stored
+    assignments. The Supabase registry becomes the canonical member baseline.
     """
 
     @staticmethod
@@ -61,11 +58,22 @@ class EmbassyMemberImporter:
         guild: discord.Guild,
         database: Database,
     ) -> EmbassyMemberImportResult:
+        if await database.embassy_member_registry_is_frozen():
+            counts = await database.fetch_embassy_member_registry_counts()
+            return EmbassyMemberImportResult(
+                embassies_scanned=0,
+                access_roles_found=0,
+                assignments_seen=counts["total"],
+                foreign_diplomats=counts["foreign_diplomats"],
+                indian_ambassadors=counts["indian_ambassadors"],
+                unchanged=counts["total"],
+                unmatched_embassies=0,
+                already_frozen=True,
+            )
+
         embassies = await database.fetch_active_embassies()
         legacy_roles = await database.fetch_legacy_roles()
 
-        # Legacy-role data is the strongest mapping because it contains the
-        # exact Discord role ID. Country-name matching is only a safe fallback.
         role_to_embassy: dict[int, str] = {}
         for row in legacy_roles:
             try:
@@ -102,9 +110,6 @@ class EmbassyMemberImporter:
         indian_ambassadors = 0
         unchanged = 0
 
-        # This is intentionally a one-way baseline import. We preserve every
-        # assignment already stored in Supabase even if the legacy Discord role
-        # disappears later. That is the requested hardcoded member registry.
         for role_id, embassy_id in matched_roles.items():
             role = guild.get_role(role_id)
             if role is None:
@@ -134,6 +139,8 @@ class EmbassyMemberImporter:
                 else:
                     unchanged += 1
 
+        await database.freeze_embassy_member_registry()
+
         matched_embassies = set(matched_roles.values())
         return EmbassyMemberImportResult(
             embassies_scanned=len(embassies),
@@ -143,4 +150,5 @@ class EmbassyMemberImporter:
             indian_ambassadors=indian_ambassadors,
             unchanged=unchanged,
             unmatched_embassies=max(0, len(embassies) - len(matched_embassies)),
+            already_frozen=False,
         )
