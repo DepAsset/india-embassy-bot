@@ -17,16 +17,20 @@ class EmbassyMemberImportResult:
     foreign_diplomats: int
     indian_ambassadors: int
     unchanged: int
-    deactivated: int
     unmatched_embassies: int
 
 
 class EmbassyMemberImporter:
-    """Read current Discord embassy-role memberships into the Supabase registry.
+    """Freeze the current embassy-role membership into the Supabase registry.
 
     Every person holding an embassy-specific access role is registered as one of:
     - foreign_diplomat: embassy access role, but no Indian Citizen role
     - indian_ambassador: embassy access role AND Indian Citizen role
+
+    The legacy Discord access role is used only to discover the current baseline.
+    Once imported, the registry assignment is independent of that role. In
+    particular, the importer never deactivates a stored member just because the
+    legacy role is later removed or deleted.
     """
 
     @staticmethod
@@ -97,22 +101,18 @@ class EmbassyMemberImporter:
         foreign_diplomats = 0
         indian_ambassadors = 0
         unchanged = 0
-        deactivated = 0
 
-        # An embassy should have one country-specific access role. If multiple
-        # roles accidentally map to it, process each role independently and
-        # preserve the exact role ID on the registry record.
+        # This is intentionally a one-way baseline import. We preserve every
+        # assignment already stored in Supabase even if the legacy Discord role
+        # disappears later. That is the requested hardcoded member registry.
         for role_id, embassy_id in matched_roles.items():
             role = guild.get_role(role_id)
             if role is None:
                 continue
 
-            seen_user_ids: set[str] = set()
             for member in role.members:
-                user_id = str(member.id)
-                seen_user_ids.add(user_id)
                 assignments_seen += 1
-
+                user_id = str(member.id)
                 member_type = (
                     "indian_ambassador"
                     if self._is_indian_citizen(member, citizen_role_id)
@@ -134,12 +134,6 @@ class EmbassyMemberImporter:
                 else:
                     unchanged += 1
 
-            deactivated += await database.deactivate_missing_embassy_members(
-                embassy_id=embassy_id,
-                embassy_role_id=str(role.id),
-                seen_user_ids=seen_user_ids,
-            )
-
         matched_embassies = set(matched_roles.values())
         return EmbassyMemberImportResult(
             embassies_scanned=len(embassies),
@@ -148,6 +142,5 @@ class EmbassyMemberImporter:
             foreign_diplomats=foreign_diplomats,
             indian_ambassadors=indian_ambassadors,
             unchanged=unchanged,
-            deactivated=deactivated,
             unmatched_embassies=max(0, len(embassies) - len(matched_embassies)),
         )
