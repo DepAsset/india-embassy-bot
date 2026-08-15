@@ -85,6 +85,49 @@ class Database:
             await cursor.execute("select id, embassy_id, discord_user_id, discord_username, member_type, embassy_role_id, active, assigned_at, updated_at from embassy_members where embassy_id = %s::uuid and active = true order by member_type asc, discord_username asc", (embassy_id,))
             return list(await cursor.fetchall())
 
+    async def fetch_pending_government_requests(self) -> list[dict[str, Any]]:
+        await self.connect(); assert self._connection is not None
+        async with self._connection.cursor() as cursor:
+            await cursor.execute("""
+                select r.*, e.country_name, e.channel_id, e.channel_name
+                from embassy_requests r
+                join embassies e on e.id = r.target_embassy_id
+                where r.request_status = 'pending_approval'
+                  and r.flow_stage = 'awaiting_government_approval'
+                  and e.status = 'active'
+                order by r.created_at asc
+            """)
+            return list(await cursor.fetchall())
+
+    async def fetch_request_statistics(self) -> dict[str, int]:
+        await self.connect(); assert self._connection is not None
+        async with self._connection.cursor() as cursor:
+            await cursor.execute("""
+                select
+                    count(*)::int as total,
+                    count(*) filter (where request_status = 'pending_approval')::int as pending,
+                    count(*) filter (where request_status = 'approved')::int as approved,
+                    count(*) filter (where request_status = 'rejected')::int as rejected,
+                    count(*) filter (where verification_status = 'verified')::int as verified
+                from embassy_requests
+            """)
+            row = await cursor.fetchone() or {}
+            return {k: int(row.get(k, 0)) for k in ("total", "pending", "approved", "rejected", "verified")}
+
+    async def fetch_recent_audit_logs(self, limit: int = 15) -> list[dict[str, Any]]:
+        await self.connect(); assert self._connection is not None
+        limit = max(1, min(int(limit), 50))
+        async with self._connection.cursor() as cursor:
+            await cursor.execute("select actor_discord_id, action, target_type, target_id, embassy_id, result, metadata, created_at from audit_logs order by created_at desc limit %s", (limit,))
+            return list(await cursor.fetchall())
+
+    async def fetch_user_audit_logs(self, user_id: int, limit: int = 15) -> list[dict[str, Any]]:
+        await self.connect(); assert self._connection is not None
+        limit = max(1, min(int(limit), 50))
+        async with self._connection.cursor() as cursor:
+            await cursor.execute("select actor_discord_id, action, target_type, target_id, embassy_id, result, metadata, created_at from audit_logs where actor_discord_id = %s order by created_at desc limit %s", (user_id, limit))
+            return list(await cursor.fetchall())
+
     async def update_embassy_layout_state(self, updates: list[tuple[str, int, int, int]]) -> None:
         if not updates: return
         await self.connect(); assert self._connection is not None
@@ -150,9 +193,10 @@ class Database:
         async with self._connection.cursor() as cursor:
             await cursor.execute("""
                 select r.*, e.country_name, e.channel_id, e.channel_name
-                from embassy_requests r join embassies e on e.id = r.embassy_id
+                from embassy_requests r join embassies e on e.id = r.target_embassy_id
                 where r.request_status = 'pending_approval' and e.status = 'active'
-                  and exists (select 1 from embassy_members em where em.embassy_id = r.embassy_id and em.discord_user_id = %s and em.active = true)
+                  and r.flow_stage = 'awaiting_embassy_approval'
+                  and exists (select 1 from embassy_members em where em.embassy_id = r.target_embassy_id and em.discord_user_id = %s and em.active = true)
                 order by r.created_at asc
             """, (discord_user_id,))
             return list(await cursor.fetchall())
@@ -162,17 +206,19 @@ class Database:
         await self.connect(); assert self._connection is not None
         async with self._connection.transaction():
             async with self._connection.cursor() as cursor:
-                await cursor.execute("select r.*, e.country_name from embassy_requests r join embassies e on e.id = r.embassy_id where r.id = %s::uuid for update of r", (request_id,))
+                await cursor.execute("select r.*, e.country_name from embassy_requests r join embassies e on e.id = r.target_embassy_id where r.id = %s::uuid for update of r", (request_id,))
                 request = await cursor.fetchone()
                 if request is None: raise LookupError("Embassy request not found")
                 if request["request_status"] != "pending_approval": raise ValueError("Embassy request is no longer awaiting approval")
-                await cursor.execute("select 1 from embassy_members where embassy_id = %s::uuid and discord_user_id = %s and active = true limit 1", (request["embassy_id"], actor_discord_id))
-                if await cursor.fetchone() is None: raise PermissionError("Actor is not an active member of this embassy")
+                if request["flow_stage"] == "awaiting_embassy_approval":
+                    await cursor.execute("select 1 from embassy_members where embassy_id = %s::uuid and discord_user_id = %s and active = true limit 1", (request["target_embassy_id"], actor_discord_id))
+                    if await cursor.fetchone() is None: raise PermissionError("Actor is not an active member of this embassy")
                 if decision == "approved":
                     if assignment_type not in {"foreign_diplomat", "indian_ambassador"}: raise ValueError("assignment_type is required for approval")
-                    await cursor.execute("insert into embassy_assignments (user_discord_id, embassy_id, assignment_type, status, granted_by_discord_id) values (%s, %s::uuid, %s, 'active', %s) on conflict (user_discord_id, embassy_id) where status = 'active' do update set assignment_type = excluded.assignment_type, granted_by_discord_id = excluded.granted_by_discord_id, granted_at = now(), updated_at = now()", (request["applicant_discord_id"], request["embassy_id"], assignment_type, actor_discord_id))
+                    await cursor.execute("insert into embassy_assignments (user_discord_id, embassy_id, assignment_type, status, granted_by_discord_id) values (%s, %s::uuid, %s, 'active', %s) on conflict (user_discord_id, embassy_id) where status = 'active' do update set assignment_type = excluded.assignment_type, granted_by_discord_id = excluded.granted_by_discord_id, granted_at = now(), updated_at = now()", (request["applicant_discord_id"], request["target_embassy_id"], assignment_type, actor_discord_id))
                     request_status = "approved"
-                else: request_status = "rejected"
+                else:
+                    request_status = "rejected"
                 await cursor.execute("update embassy_requests set request_status = %s, decision_actor_discord_id = %s, decision_reason = %s, decided_at = now(), completed_at = case when %s = 'approved' then now() else completed_at end, updated_at = now() where id = %s::uuid returning *", (request_status, actor_discord_id, reason, request_status, request_id))
                 result = await cursor.fetchone(); assert result is not None
                 return dict(result)
