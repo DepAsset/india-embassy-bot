@@ -64,7 +64,7 @@ class Database:
     async def upsert_embassy_member(
         self,
         *,
-        embassy_id: int,
+        embassy_id: str,
         discord_user_id: str,
         discord_username: str,
         member_type: str,
@@ -94,7 +94,38 @@ class Database:
                 row = await cursor.fetchone()
                 return bool(row and row["inserted"])
 
-    async def fetch_embassy_members(self, embassy_id: int) -> list[dict[str, Any]]:
+    async def deactivate_missing_embassy_members(
+        self,
+        *,
+        embassy_id: str,
+        embassy_role_id: str,
+        seen_user_ids: set[str],
+    ) -> int:
+        """Deactivate assignments that no longer hold the embassy access role."""
+        await self.connect()
+        assert self._connection is not None
+        async with self._connection.transaction():
+            async with self._connection.cursor() as cursor:
+                if seen_user_ids:
+                    await cursor.execute("""
+                        update embassy_members
+                        set active = false, updated_at = now()
+                        where embassy_id = %s
+                          and embassy_role_id = %s
+                          and active = true
+                          and not (discord_user_id = any(%s))
+                    """, (embassy_id, embassy_role_id, list(seen_user_ids)))
+                else:
+                    await cursor.execute("""
+                        update embassy_members
+                        set active = false, updated_at = now()
+                        where embassy_id = %s
+                          and embassy_role_id = %s
+                          and active = true
+                    """, (embassy_id, embassy_role_id))
+                return cursor.rowcount
+
+    async def fetch_embassy_members(self, embassy_id: str) -> list[dict[str, Any]]:
         await self.connect()
         assert self._connection is not None
         async with self._connection.cursor() as cursor:
