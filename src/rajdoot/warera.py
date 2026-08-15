@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from typing import Any
 
@@ -15,18 +16,14 @@ class WarEraProfile:
 
 
 class WarEraClient:
-    """Small, purpose-built WarEra client.
-
-    The embassy flow only needs three reads: lite/full user data and the user's
-    companies. Keeping those calls here makes the workflow easy to test and
-    prevents Discord UI code from knowing anything about tRPC wire formats.
-    """
+    """Small, purpose-built WarEra client for the embassy workflow."""
 
     def __init__(self, settings: Settings) -> None:
         self.base_url = settings.warera_api_base_url.rstrip("/")
         self.profile_path = settings.warera_api_profile_path
         self.full_profile_path = settings.warera_api_full_profile_path
         self.companies_path = settings.warera_api_companies_path
+        self.company_path = settings.warera_api_company_path
         self.token = settings.warera_api_token
 
     def _headers(self) -> dict[str, str]:
@@ -79,49 +76,95 @@ class WarEraClient:
         return WarEraProfile(user_id=str(user_id), raw=profile)
 
     async def get_companies(self, user_id: str) -> list[dict[str, Any]]:
-        """Return all companies owned by a user, following the cursor if needed."""
+        """Return every company reference from every company.getCompanies page.
+
+        The API currently returns company IDs in `items`, not company objects.
+        Those IDs are intentionally retained for the subsequent company.getById
+        calls instead of being discarded.
+        """
         companies: list[dict[str, Any]] = []
         cursor: str | None = None
+
         for _ in range(100):
             payload: dict[str, Any] = {"userId": str(user_id), "perPage": 100}
             if cursor:
                 payload["cursor"] = cursor
+
             data = self._unwrap(await self._post(self.companies_path, payload))
             if isinstance(data, dict):
-                items = data.get("companies") or data.get("items") or []
-                next_cursor = data.get("nextCursor") or data.get("next_cursor") or data.get("cursor")
+                items = data.get("items") or data.get("companies") or []
+                next_cursor = data.get("nextCursor") or data.get("next_cursor")
             elif isinstance(data, list):
                 items = data
                 next_cursor = None
             else:
                 items = []
                 next_cursor = None
+
             for item in items:
-                if isinstance(item, dict):
-                    companies.append(item)
-            if not next_cursor or next_cursor == cursor:
+                if isinstance(item, str):
+                    companies.append({"_id": item})
+                elif isinstance(item, dict):
+                    company_id = item.get("_id") or item.get("id") or item.get("companyId")
+                    company = dict(item)
+                    if company_id:
+                        company.setdefault("_id", str(company_id))
+                    companies.append(company)
+
+            if not next_cursor or str(next_cursor) == cursor:
                 break
             cursor = str(next_cursor)
+
         return companies
+
+    async def get_company_by_id(self, company_id: str) -> dict[str, Any] | None:
+        """Resolve one company ID into its full company object, including name."""
+        try:
+            payload = await self._post(self.company_path, {"companyId": str(company_id)})
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                return None
+            raise
+
+        company = self._unwrap(payload)
+        if not isinstance(company, dict):
+            return None
+        return company
+
+    async def get_all_company_details(self, user_id: str) -> list[dict[str, Any]]:
+        """Fetch full details for every company returned by getCompanies."""
+        references = await self.get_companies(user_id)
+        semaphore = asyncio.Semaphore(8)
+
+        async def resolve(reference: dict[str, Any]) -> dict[str, Any] | None:
+            if isinstance(reference.get("name"), str):
+                return reference
+            company_id = reference.get("_id") or reference.get("id") or reference.get("companyId")
+            if not company_id:
+                return None
+            async with semaphore:
+                details = await self.get_company_by_id(str(company_id))
+            if not details:
+                return None
+            merged = dict(details)
+            merged.setdefault("_id", str(company_id))
+            return merged
+
+        resolved = await asyncio.gather(*(resolve(reference) for reference in references))
+        return [company for company in resolved if company is not None]
 
     async def verify_company_otp(self, user_id: str, otp: str) -> bool:
         expected = otp.casefold().strip()
-        companies = await self.get_companies(user_id)
-        for company in companies:
-            name = company.get("name") or company.get("companyName") or company.get("title")
-            if isinstance(name, str) and name.casefold().strip() == expected:
-                return True
-        return False
+        companies = await self.get_all_company_details(user_id)
+        return any(
+            isinstance(company.get("name"), str)
+            and company["name"].casefold().strip() == expected
+            for company in companies
+        )
 
 
 def detect_government_position(profile: dict[str, Any]) -> str | None:
-    """Detect President/VP/MoFA from the full user response.
-
-    WarEra has exposed government membership under the `infos` object (for
-    example `minOfForeignAffairsOf`). The recursive fallback also tolerates
-    minor API shape changes without making a false positive from unrelated
-    prose.
-    """
+    """Detect President/VP/MoFA from the full user response."""
     infos = profile.get("infos")
     if isinstance(infos, dict):
         if infos.get("minOfForeignAffairsOf"):
@@ -153,7 +196,7 @@ def detect_government_position(profile: dict[str, Any]) -> str | None:
                 return "Minister of Foreign Affairs"
             if "vicepresident" in key_norm or text == "vice president":
                 return "Vice President"
-            if "president" in key_norm and "vice" not in key_norm or text == "president":
+            if ("president" in key_norm and "vice" not in key_norm) or text == "president":
                 return "President"
         return None
 
