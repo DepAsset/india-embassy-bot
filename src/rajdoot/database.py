@@ -30,58 +30,82 @@ class Database:
         await self.connect()
         assert self._connection is not None
         async with self._connection.cursor() as cursor:
-            await cursor.execute(
-                """
+            await cursor.execute("""
                 select id, country_id, country_name, channel_id, channel_name,
                        category_id, status, display_order
-                from embassies
-                where status = 'active'
+                from embassies where status = 'active'
                 order by country_name asc
-                """
-            )
+            """)
             return list(await cursor.fetchall())
 
     async def fetch_all_embassies(self) -> list[dict[str, Any]]:
         await self.connect()
         assert self._connection is not None
         async with self._connection.cursor() as cursor:
-            await cursor.execute(
-                """
+            await cursor.execute("""
                 select id, country_id, country_name, channel_id, channel_name,
                        category_id, status, display_order
                 from embassies
                 order by status, display_order nulls last, country_name asc
-                """
-            )
+            """)
             return list(await cursor.fetchall())
 
     async def fetch_legacy_roles(self) -> list[dict[str, Any]]:
         await self.connect()
         assert self._connection is not None
         async with self._connection.cursor() as cursor:
-            await cursor.execute(
-                """
+            await cursor.execute("""
                 select role_id, role_name, embassy_id, disposition, notes
                 from embassy_legacy_roles
                 order by role_name asc, role_id asc
-                """
-            )
+            """)
             return list(await cursor.fetchall())
 
-    async def fetch_embassy(self, embassy_id: str) -> dict[str, Any] | None:
+    async def upsert_embassy_member(
+        self,
+        *,
+        embassy_id: int,
+        discord_user_id: str,
+        discord_username: str,
+        member_type: str,
+        embassy_role_id: str,
+    ) -> bool:
+        """Insert/update an embassy assignment. Returns True when inserted."""
+        await self.connect()
+        assert self._connection is not None
+        async with self._connection.transaction():
+            async with self._connection.cursor() as cursor:
+                await cursor.execute("""
+                    insert into embassy_members (
+                        embassy_id, discord_user_id, discord_username,
+                        member_type, embassy_role_id, active
+                    ) values (%s, %s, %s, %s, %s, true)
+                    on conflict (embassy_id, discord_user_id) do update set
+                        discord_username = excluded.discord_username,
+                        member_type = excluded.member_type,
+                        embassy_role_id = excluded.embassy_role_id,
+                        active = true,
+                        updated_at = now()
+                    returning (xmax = 0) as inserted
+                """, (
+                    embassy_id, discord_user_id, discord_username,
+                    member_type, embassy_role_id,
+                ))
+                row = await cursor.fetchone()
+                return bool(row and row["inserted"])
+
+    async def fetch_embassy_members(self, embassy_id: int) -> list[dict[str, Any]]:
         await self.connect()
         assert self._connection is not None
         async with self._connection.cursor() as cursor:
-            await cursor.execute(
-                """
-                select id, country_id, country_name, channel_id, channel_name,
-                       category_id, status, display_order
-                from embassies
-                where id = %s
-                """,
-                (embassy_id,),
-            )
-            return await cursor.fetchone()
+            await cursor.execute("""
+                select id, embassy_id, discord_user_id, discord_username,
+                       member_type, embassy_role_id, active, assigned_at, updated_at
+                from embassy_members
+                where embassy_id = %s and active = true
+                order by member_type asc, discord_username asc
+            """, (embassy_id,))
+            return list(await cursor.fetchall())
 
     async def update_embassy_layout_state(
         self,
@@ -94,29 +118,32 @@ class Database:
         assert self._connection is not None
         async with self._connection.transaction():
             async with self._connection.cursor() as cursor:
-                await cursor.executemany(
-                    """
+                await cursor.executemany("""
                     update embassies
-                    set category_id = %s,
-                        channel_id = %s,
-                        display_order = %s,
-                        updated_at = now()
+                    set category_id = %s, channel_id = %s,
+                        display_order = %s, updated_at = now()
                     where id = %s
-                    """,
-                    [
-                        (category_id, channel_id, display_order, embassy_id)
-                        for embassy_id, category_id, channel_id, display_order in updates
-                    ],
-                )
+                """, [
+                    (category_id, channel_id, display_order, embassy_id)
+                    for embassy_id, category_id, channel_id, display_order in updates
+                ])
+
+    async def fetch_embassy(self, embassy_id: str) -> dict[str, Any] | None:
+        await self.connect()
+        assert self._connection is not None
+        async with self._connection.cursor() as cursor:
+            await cursor.execute("""
+                select id, country_id, country_name, channel_id, channel_name,
+                       category_id, status, display_order
+                from embassies where id = %s
+            """, (embassy_id,))
+            return await cursor.fetchone()
 
     async def fetch_discord_configuration(self, guild_id: int) -> dict[str, Any] | None:
         await self.connect()
         assert self._connection is not None
         async with self._connection.cursor() as cursor:
-            await cursor.execute(
-                "select * from discord_configuration where guild_id = %s",
-                (guild_id,),
-            )
+            await cursor.execute("select * from discord_configuration where guild_id = %s", (guild_id,))
             return await cursor.fetchone()
 
     async def upsert_discord_configuration(
@@ -134,8 +161,7 @@ class Database:
         assert self._connection is not None
         async with self._connection.transaction():
             async with self._connection.cursor() as cursor:
-                await cursor.execute(
-                    """
+                await cursor.execute("""
                     insert into discord_configuration (
                         guild_id, request_category_id, logs_channel_id,
                         government_dashboard_channel_id, government_dashboard_message_id,
@@ -149,14 +175,8 @@ class Database:
                         diplomat_dashboard_channel_id = excluded.diplomat_dashboard_channel_id,
                         diplomat_dashboard_message_id = excluded.diplomat_dashboard_message_id,
                         updated_at = now()
-                    """,
-                    (
-                        guild_id,
-                        request_category_id,
-                        logs_channel_id,
-                        government_dashboard_channel_id,
-                        government_dashboard_message_id,
-                        diplomat_dashboard_channel_id,
-                        diplomat_dashboard_message_id,
-                    ),
-                )
+                """, (
+                    guild_id, request_category_id, logs_channel_id,
+                    government_dashboard_channel_id, government_dashboard_message_id,
+                    diplomat_dashboard_channel_id, diplomat_dashboard_message_id,
+                ))
