@@ -39,3 +39,21 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+# Discord's `defer(thinking=True)` renders a misleading "RAJDOOT is thinking..."
+# state while the WarEra API is being checked. Turn that into an explicit,
+# immediate progress message instead. The rest of the interaction/follow-up
+# lifecycle remains unchanged.
+import discord
+
+_original_defer = discord.InteractionResponse.defer
+
+
+async def _defer_with_visible_progress(self: discord.InteractionResponse, *, ephemeral: bool = False, thinking: bool = False) -> None:
+    if thinking:
+        await self.send_message("🔄 Processing…", ephemeral=ephemeral)
+        return
+    await _original_defer(self, ephemeral=ephemeral, thinking=thinking)
+
+
+discord.InteractionResponse.defer = _defer_with_visible_progress
