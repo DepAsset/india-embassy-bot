@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     warera_api_full_profile_path: str = "/trpc/user.getUserById"
     warera_api_companies_path: str = "/trpc/company.getCompanies"
     warera_api_company_path: str = "/trpc/company.getById"
+    warera_api_country_path: str = "/trpc/country.getCountryById"
     warera_api_token: str | None = None
 
     health_host: str = "0.0.0.0"
