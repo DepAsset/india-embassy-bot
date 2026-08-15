@@ -4,6 +4,7 @@ import discord
 
 from rajdoot.database import Database
 from rajdoot.dashboards import GovernmentEmbassyView
+from rajdoot.embassy_approval import EmbassyApprovalView, approval_request_embed
 from rajdoot.ui import embassy_directory_embed
 
 
@@ -25,9 +26,6 @@ class FixedGovernmentDashboardView(discord.ui.View):
         embed: discord.Embed,
         view: discord.ui.View | None = None,
     ) -> None:
-        # discord.py expects the `view` argument to be omitted when there is
-        # no view. Passing view=None explicitly reaches is_finished() and
-        # crashes inside discord.py.
         if view is None:
             await interaction.response.send_message(embed=embed)
         else:
@@ -42,7 +40,7 @@ class FixedGovernmentDashboardView(discord.ui.View):
         await interaction.response.send_message(embed=await embassy_directory_embed(self.database), view=GovernmentEmbassyView(self.database))
 
     @discord.ui.button(label="Manage Diplomats", emoji="👥", style=discord.ButtonStyle.primary, custom_id="rajdoot:fixed:government:diplomats")
-    async def diplomats(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+    async def diplomats(self, interaction: discord.Interaction, button: discord.Button) -> None:
         await self._open(interaction, embed=discord.Embed(title="👥 Manage Diplomats", description="Diplomat profiles, assignments and access management will be handled here.\n\nThe Government Control Center remains fixed above.", colour=discord.Colour.blurple()))
 
     @discord.ui.button(label="Statistics", emoji="📊", style=discord.ButtonStyle.secondary, custom_id="rajdoot:fixed:government:statistics")
@@ -84,6 +82,34 @@ class FixedDiplomatDashboardView(discord.ui.View):
     @discord.ui.button(label="My Embassies", emoji="🏛️", style=discord.ButtonStyle.primary, custom_id="rajdoot:fixed:diplomat:embassies")
     async def embassies(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await interaction.response.send_message(embed=await embassy_directory_embed(self.database))
+
+    @discord.ui.button(label="Pending Requests", emoji="📥", style=discord.ButtonStyle.success, custom_id="rajdoot:fixed:diplomat:requests")
+    async def pending_requests(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message("This dashboard action is only available inside the embassy server.", ephemeral=True)
+            return
+        requests = await self.database.fetch_pending_requests_for_member(interaction.user.id)
+        if not requests:
+            await interaction.response.send_message("📭 You have no embassy access requests waiting for approval.", ephemeral=True)
+            return
+
+        first = requests[0]
+        await interaction.response.send_message(
+            embed=approval_request_embed(first),
+            view=EmbassyApprovalView(self.database, first),
+            ephemeral=True,
+        )
+        for request in requests[1:10]:
+            await interaction.followup.send(
+                embed=approval_request_embed(request),
+                view=EmbassyApprovalView(self.database, request),
+                ephemeral=True,
+            )
+        if len(requests) > 10:
+            await interaction.followup.send(
+                f"📚 Showing the first 10 of {len(requests)} pending requests. Refresh the dashboard to load the current queue.",
+                ephemeral=True,
+            )
 
     @discord.ui.button(label="Embassy Members", emoji="👥", style=discord.ButtonStyle.primary, custom_id="rajdoot:fixed:diplomat:members")
     async def members(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
