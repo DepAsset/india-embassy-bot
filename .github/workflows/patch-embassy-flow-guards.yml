@@ -17,74 +17,17 @@ jobs:
           fetch-depth: 0
 
       - name: Apply embassy flow hardening
-        shell: bash
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-
-          def patch(path, old, new):
-              p = Path(path)
-              text = p.read_text()
-              if new in text:
-                  return False
-              if old not in text:
-                  raise SystemExit(f"Expected patch anchor not found: {path}")
-              p.write_text(text.replace(old, new, 1))
-              return True
-
-          changed = False
-
-          changed |= patch(
-              "src/rajdoot/verification_dashboard.py",
-              '''    if message_id:\n        try:\n            message = await channel.fetch_message(message_id)\n            await message.edit(embed=embed, view=FixedVerificationDashboardView(database))\n            return message\n        except (discord.NotFound, discord.HTTPException):\n            pass\n    return await channel.send(embed=embed, view=FixedVerificationDashboardView(database))\n''',
-              '''    # Prefer the configured message, but if it is stale/missing, recover an existing\n    # dashboard message instead of spawning another copy on every restart/reconnect.\n    if message_id:\n        try:\n            message = await channel.fetch_message(message_id)\n            await message.edit(embed=embed, view=FixedVerificationDashboardView(database))\n            return message\n        except (discord.NotFound, discord.HTTPException):\n            pass\n\n    marker = "RAJDOOT Verification & Access Request"\n    try:\n        async for candidate in channel.history(limit=100, oldest_first=True):\n            if channel.guild.me and candidate.author.id != channel.guild.me.id:\n                continue\n            if candidate.embeds and marker in (candidate.embeds[0].title or ""):\n                await candidate.edit(embed=embed, view=FixedVerificationDashboardView(database))\n                return candidate\n    except discord.HTTPException:\n        pass\n\n    return await channel.send(embed=embed, view=FixedVerificationDashboardView(database))\n'''
-          )
-
-          changed |= patch(
-              "src/rajdoot/workflow_store.py",
-              '''    async def fetch_open_for_applicant(self, applicant_id: int) -> dict[str, Any] | None:\n        connection = await self._connection()\n        async with connection.cursor() as cursor:\n            await cursor.execute(\n                """\n                select * from embassy_requests\n                where applicant_discord_id = %s\n                  and request_status not in ('approved', 'rejected', 'failed', 'cancelled')\n                order by created_at desc limit 1\n                """,\n                (applicant_id,),\n            )\n            return await cursor.fetchone()\n''',
-              '''    async def fetch_open_for_applicant(self, applicant_id: int) -> dict[str, Any] | None:\n        connection = await self._connection()\n        async with connection.cursor() as cursor:\n            await cursor.execute(\n                """\n                select * from embassy_requests\n                where applicant_discord_id = %s\n                  and request_status not in ('approved', 'rejected', 'failed', 'cancelled')\n                order by created_at desc limit 1\n                """,\n                (applicant_id,),\n            )\n            return await cursor.fetchone()\n\n    async def fetch_latest_for_applicant(self, applicant_id: int) -> dict[str, Any] | None:\n        connection = await self._connection()\n        async with connection.cursor() as cursor:\n            await cursor.execute(\n                "select * from embassy_requests where applicant_discord_id = %s order by created_at desc limit 1",\n                (applicant_id,),\n            )\n            return await cursor.fetchone()\n'''
-          )
-
-          changed |= patch(
-              "src/rajdoot/embassy_workflow.py",
-              '''from rajdoot.database import Database\nfrom rajdoot.embassy_access import EmbassyAccessService, is_government\n''',
-              '''from rajdoot.database import Database\nfrom rajdoot.embassy_access import EmbassyAccessService, is_government\nfrom rajdoot.embassy_layout import EmbassyDiscordOrganizer, EmbassyLayoutPlanner\n'''
-          )
-
-          changed |= patch(
-              "src/rajdoot/embassy_workflow.py",
-              '''            if row is None:\n                raise RuntimeError("Embassy record creation failed")\n            return dict(row)\n''',
-              '''            if row is None:\n                raise RuntimeError("Embassy record creation failed")\n            created = dict(row)\n\n    active_after = await database.fetch_active_embassies()\n    plan = EmbassyLayoutPlanner.plan(active_after)\n    await EmbassyDiscordOrganizer().apply_plan(guild, plan)\n    return created\n'''
-          )
-
-          changed |= patch(
-              "src/rajdoot/embassy_workflow.py",
-              '''    if own_country and position in {"President", "Vice President", "Minister of Foreign Affairs"}:\n        await store.set_flow_state(request_id, "approved_government_official", request_status="approved", government_auto_approved=True)\n        await EmbassyAccessService(database).grant(applicant.guild, applicant, embassy, actor_id=None, assignment_type="foreign_diplomat")\n        await store.log_audit(actor=applicant.id, action="GOVERNMENT_OFFICIAL_AUTO_APPROVED", target_type="request", target_id=request_id, embassy_id=str(embassy["id"]), result="APPROVED", metadata={"position": position})\n        if channel:\n            await channel.send(f"🟢 **Auto-approved.** Your verified **{position}** status grants immediate access to your own country's embassy.")\n        await close_thread(channel)\n        return\n\n    await store.set_flow_state(\n''',
-              '''    if own_country and position in {"President", "Vice President", "Minister of Foreign Affairs"}:\n        await store.set_flow_state(request_id, "approved_government_official", request_status="approved", government_auto_approved=True)\n        await EmbassyAccessService(database).grant(applicant.guild, applicant, embassy, actor_id=None, assignment_type="foreign_diplomat")\n        await store.log_audit(actor=applicant.id, action="GOVERNMENT_OFFICIAL_AUTO_APPROVED", target_type="request", target_id=request_id, embassy_id=str(embassy["id"]), result="APPROVED", metadata={"position": position})\n        if channel:\n            await channel.send(f"🟢 **Auto-approved.** Your verified **{position}** status grants immediate access to your own country's embassy.")\n        await close_thread(channel)\n        return\n\n    if own_country:\n        diplomats = await store.active_embassy_members(str(embassy["id"]))\n        if not diplomats:\n            await store.set_flow_state(\n                request_id,\n                "approved_new_or_unstaffed_embassy",\n                request_status="approved",\n                government_auto_approved=True,\n                target_country_id=str(embassy.get("country_id") or country_id or ""),\n                target_embassy_id=str(embassy["id"]),\n            )\n            await EmbassyAccessService(database).grant(\n                applicant.guild,\n                applicant,\n                embassy,\n                actor_id=None,\n                assignment_type="foreign_diplomat",\n            )\n            await store.log_audit(\n                actor=applicant.id,\n                action="UNSTAFFED_EMBASSY_AUTO_APPROVED",\n                target_type="request",\n                target_id=request_id,\n                embassy_id=str(embassy["id"]),\n                result="APPROVED",\n                metadata={"reason": "no_active_diplomats"},\n            )\n            if channel:\n                await channel.send(\n                    f"🟢 **{embassy['country_name']} Embassy access granted.** "\n                    "This embassy currently has no active diplomats, so no approval step was required."\n                )\n            await close_thread(channel)\n            return\n\n    await store.set_flow_state(\n'''
-          )
-
-          changed |= patch(
-              "src/rajdoot/verification_dashboard.py",
-              '''        store = WorkflowStore(self.database)\n        existing = await store.fetch_open_for_applicant(interaction.user.id)\n        if existing:\n            thread_id = existing.get("request_thread_id")\n            thread = interaction.guild.get_thread(int(thread_id)) if thread_id else None\n            suffix = f" Continue here: {thread.mention}" if thread else " Continue in your existing request thread."\n            await interaction.response.send_message(f"⏳ You already have an active access request.{suffix}", ephemeral=True)\n            return\n\n        parent = interaction.guild.get_channel(settings.request_channel_id or 0)\n''',
-              '''        store = WorkflowStore(self.database)\n        existing = await store.fetch_open_for_applicant(interaction.user.id)\n        latest = await store.fetch_latest_for_applicant(interaction.user.id)\n        thread = None\n\n        if existing:\n            thread_id = existing.get("request_thread_id")\n            thread = interaction.guild.get_thread(int(thread_id)) if thread_id else None\n            suffix = f" Continue here: {thread.mention}" if thread else " Continue in your existing request thread."\n            await interaction.response.send_message(f"⏳ You already have an active access request.{suffix}", ephemeral=True)\n            return\n\n        if latest and latest.get("request_thread_id"):\n            thread = interaction.guild.get_thread(int(latest["request_thread_id"]))\n            if thread is not None and not thread.archived and not thread.locked:\n                await interaction.response.send_message(\n                    f"⏳ Your previous request thread is still open: {thread.mention}. Close that request before starting another one.",\n                    ephemeral=True,\n                )\n                return\n\n        parent = interaction.guild.get_channel(settings.request_channel_id or 0)\n'''
-          )
-
-          if changed:
-              Path(".patch_applied").write_text("ok\n")
-          else:
-              print("No source changes required; patch already present.")
-          PY
+        run: python scripts/patch_embassy_flow.py
 
       - name: Commit hardening changes
         shell: bash
         run: |
           if git diff --quiet; then
-            echo "No changes to commit."
+            echo "No source changes required."
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add src/rajdoot/verification_dashboard.py src/rajdoot/workflow_store.py src/rajdoot/embassy_workflow.py .patch_applied
+          git add src/rajdoot/verification_dashboard.py src/rajdoot/workflow_store.py src/rajdoot/embassy_workflow.py
           git commit -m "Harden embassy dashboard and request lifecycle"
           git push
