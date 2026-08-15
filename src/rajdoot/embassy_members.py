@@ -18,17 +18,41 @@ class EmbassyMemberImportResult:
     indian_ambassadors: int
     unchanged: int
     unmatched_embassies: int
+    permissions_applied: int = 0
+    permission_failures: int = 0
     already_frozen: bool = False
 
 
 class EmbassyMemberImporter:
-    """Create the one-time, immutable embassy-member baseline.
+    """Create and enforce the canonical embassy-member baseline.
 
     Before the registry is frozen, Discord embassy access roles are used only as
-    the discovery source for the current assignments. Once frozen, this command
-    never reads embassy roles again and never updates/deactivates the stored
-    assignments. The Supabase registry becomes the canonical member baseline.
+    the discovery source for the current assignments. Multiple access roles that
+    map to the same embassy are intentionally merged by the database's
+    (embassy_id, discord_user_id) uniqueness constraint.
+
+    After the baseline is captured, Supabase is canonical. Discord legacy roles
+    are never removed or modified by this importer. Instead, every stored member
+    receives a direct member permission overwrite on their embassy channel. That
+    direct overwrite is the Discord-side hardcoded access and survives later
+    deletion/removal of the old embassy access role.
     """
+
+    # These are the normal embassy-member capabilities, not moderation or
+    # administration privileges. View/send/history are the minimum required for
+    # text-channel access; thread/reaction/link/file permissions preserve normal
+    # embassy conversation behavior.
+    HARD_CODED_PERMISSIONS = (
+        "view_channel",
+        "send_messages",
+        "read_message_history",
+        "send_messages_in_threads",
+        "create_public_threads",
+        "create_private_threads",
+        "add_reactions",
+        "embed_links",
+        "attach_files",
+    )
 
     @staticmethod
     def _norm(value: str) -> str:
@@ -53,13 +77,70 @@ class EmbassyMemberImporter:
         text = str(value).strip()
         return text or None
 
+    async def hardcode_discord_access(
+        self,
+        guild: discord.Guild,
+        database: Database,
+    ) -> tuple[int, int]:
+        """Apply direct member overwrites from Supabase without touching roles.
+
+        This is intentionally idempotent and one-way: it only adds/updates the
+        access needed by the frozen registry. It never removes an overwrite,
+        role, membership, or permission from Discord.
+        """
+        assignments = await database.fetch_all_active_embassy_members()
+        applied = 0
+        failures = 0
+
+        for assignment in assignments:
+            try:
+                channel_id = int(assignment["channel_id"])
+                user_id = int(assignment["discord_user_id"])
+            except (TypeError, ValueError):
+                failures += 1
+                continue
+
+            channel = guild.get_channel(channel_id)
+            if not isinstance(channel, discord.TextChannel):
+                failures += 1
+                continue
+
+            member = guild.get_member(user_id)
+            if member is None:
+                try:
+                    member = await guild.fetch_member(user_id)
+                except (discord.NotFound, discord.HTTPException):
+                    failures += 1
+                    continue
+
+            # Preserve any existing member-specific overwrite fields and only
+            # force the embassy access capabilities we own.
+            overwrite = channel.overwrites_for(member)
+            for permission_name in self.HARD_CODED_PERMISSIONS:
+                setattr(overwrite, permission_name, True)
+
+            try:
+                await channel.set_permissions(
+                    member,
+                    overwrite=overwrite,
+                    reason="RAJDOOT hardcoded embassy member access",
+                )
+                applied += 1
+            except (discord.Forbidden, discord.NotFound, discord.HTTPException):
+                failures += 1
+
+        return applied, failures
+
     async def import_current_members(
         self,
         guild: discord.Guild,
         database: Database,
     ) -> EmbassyMemberImportResult:
+        # Once frozen, never consult the legacy roles again. We only reconcile
+        # the Discord-side direct member overwrites from the canonical registry.
         if await database.embassy_member_registry_is_frozen():
             counts = await database.fetch_embassy_member_registry_counts()
+            applied, failures = await self.hardcode_discord_access(guild, database)
             return EmbassyMemberImportResult(
                 embassies_scanned=0,
                 access_roles_found=0,
@@ -68,12 +149,16 @@ class EmbassyMemberImporter:
                 indian_ambassadors=counts["indian_ambassadors"],
                 unchanged=counts["total"],
                 unmatched_embassies=0,
+                permissions_applied=applied,
+                permission_failures=failures,
                 already_frozen=True,
             )
 
         embassies = await database.fetch_active_embassies()
         legacy_roles = await database.fetch_legacy_roles()
 
+        # Exact legacy-role mapping is preferred. Country-name matching is only
+        # a fallback for legacy rows that are missing/incomplete.
         role_to_embassy: dict[int, str] = {}
         for row in legacy_roles:
             try:
@@ -90,6 +175,8 @@ class EmbassyMemberImporter:
             if self._as_id(row.get("id"))
         }
 
+        # Several Discord roles may intentionally point to the same embassy.
+        # Keep every matching role here; the DB upsert merges their members.
         matched_roles: dict[int, str] = {}
         for role in guild.roles:
             mapped_embassy_id = role_to_embassy.get(role.id)
@@ -139,6 +226,16 @@ class EmbassyMemberImporter:
                 else:
                     unchanged += 1
 
+        # Do the Discord hardcoding before freezing. If any member permission
+        # cannot be applied, leave the registry unfrozen so the command can be
+        # retried safely. Existing DB rows remain available for the retry.
+        applied, failures = await self.hardcode_discord_access(guild, database)
+        if failures:
+            raise RuntimeError(
+                f"Could not hardcode Discord embassy access for {failures} stored member assignments. "
+                "The registry was NOT frozen; retry the command after fixing the Discord permission issue."
+            )
+
         await database.freeze_embassy_member_registry()
 
         matched_embassies = set(matched_roles.values())
@@ -150,5 +247,7 @@ class EmbassyMemberImporter:
             indian_ambassadors=indian_ambassadors,
             unchanged=unchanged,
             unmatched_embassies=max(0, len(embassies) - len(matched_embassies)),
+            permissions_applied=applied,
+            permission_failures=failures,
             already_frozen=False,
         )
