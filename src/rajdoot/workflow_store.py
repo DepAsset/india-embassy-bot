@@ -118,7 +118,8 @@ class WorkflowStore:
         connection = await self._connection()
         async with connection.transaction():
             async with connection.cursor() as cursor:
-                await cursor.execute("select * from embassy_requests where id = %s::uuid for update", (request_id,))
+                await cursor.execute("set local statement_timeout = '10s'")
+                await cursor.execute("select * from embassy_requests where id = %s::uuid", (request_id,))
                 row = await cursor.fetchone()
                 if row is None:
                     return "missing", None
@@ -219,7 +220,7 @@ class WorkflowStore:
                 from embassy_assignments a join embassies e on e.id = a.embassy_id
                 where a.user_discord_id = %s and a.status = 'active' and e.status = 'active'
                 order by e.country_name asc
-                """ ,
+                """,
                 (discord_user_id,),
             )
             return list(await cursor.fetchall())
