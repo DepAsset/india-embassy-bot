@@ -12,6 +12,7 @@ from discord import app_commands
 from rajdoot.config import settings
 from rajdoot.database import Database
 from rajdoot.embassy_access import EmbassyAccessService, is_government
+from rajdoot.embassy_layout import EmbassyDiscordOrganizer, EmbassyLayoutPlanner
 from rajdoot.warera import WarEraClient, detect_government_position
 from rajdoot.workflow_store import WorkflowStore
 
@@ -321,7 +322,12 @@ async def find_or_create_embassy(database: Database, guild: discord.Guild, count
             row = await cursor.fetchone()
             if row is None:
                 raise RuntimeError("Embassy record creation failed")
-            return dict(row)
+            created = dict(row)
+
+    active_after = await database.fetch_active_embassies()
+    plan = EmbassyLayoutPlanner.plan(active_after)
+    await EmbassyDiscordOrganizer().apply_plan(guild, plan)
+    return created
 
 
 async def process_embassy_choice(database: Database, request_id: str, applicant: discord.Member,
@@ -341,6 +347,41 @@ async def process_embassy_choice(database: Database, request_id: str, applicant:
     if embassy is None:
         await store.set_flow_state(request_id, "embassy_selection_failed", request_status="failed")
         return
+
+    if own_country:
+        diplomats = await store.active_embassy_members(str(embassy["id"]))
+        if not diplomats:
+            await store.set_flow_state(
+                request_id,
+                "approved_new_or_unstaffed_embassy",
+                request_status="approved",
+                government_auto_approved=True,
+                target_country_id=str(embassy.get("country_id") or country_id or ""),
+                target_embassy_id=str(embassy["id"]),
+            )
+            await EmbassyAccessService(database).grant(
+                applicant.guild,
+                applicant,
+                embassy,
+                actor_id=None,
+                assignment_type="foreign_diplomat",
+            )
+            await store.log_audit(
+                actor=applicant.id,
+                action="UNSTAFFED_EMBASSY_AUTO_APPROVED",
+                target_type="request",
+                target_id=request_id,
+                embassy_id=str(embassy["id"]),
+                result="APPROVED",
+                metadata={"reason": "no_active_diplomats"},
+            )
+            if channel:
+                await channel.send(
+                    f"🟢 **{embassy['country_name']} Embassy access granted.** "
+                    "This embassy currently has no active diplomats, so no approval step was required."
+                )
+            await close_thread(channel)
+            return
 
     await store.set_flow_state(
         request_id,

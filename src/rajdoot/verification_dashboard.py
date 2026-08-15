@@ -26,12 +26,24 @@ class FixedVerificationDashboardView(discord.ui.View):
 
         store = WorkflowStore(self.database)
         existing = await store.fetch_open_for_applicant(interaction.user.id)
+        latest = await store.fetch_latest_for_applicant(interaction.user.id)
+        thread = None
+
         if existing:
             thread_id = existing.get("request_thread_id")
             thread = interaction.guild.get_thread(int(thread_id)) if thread_id else None
             suffix = f" Continue here: {thread.mention}" if thread else " Continue in your existing request thread."
             await interaction.response.send_message(f"⏳ You already have an active access request.{suffix}", ephemeral=True)
             return
+
+        if latest and latest.get("request_thread_id"):
+            thread = interaction.guild.get_thread(int(latest["request_thread_id"]))
+            if thread is not None and not thread.archived and not thread.locked:
+                await interaction.response.send_message(
+                    f"⏳ Your previous request thread is still open: {thread.mention}. Close that request before starting another one.",
+                    ephemeral=True,
+                )
+                return
 
         parent = interaction.guild.get_channel(settings.request_channel_id or 0)
         if not isinstance(parent, discord.TextChannel):
@@ -112,4 +124,19 @@ async def ensure_verification_dashboard(channel: discord.TextChannel, database: 
             return message
         except (discord.NotFound, discord.HTTPException):
             pass
+
+    # Recover an existing fixed dashboard before creating anything. This makes the
+    # dashboard singleton resilient to stale/missing database message IDs and bot restarts.
+    marker = "RAJDOOT Verification & Access Request"
+    try:
+        bot_id = channel.guild.me.id if channel.guild.me else None
+        async for candidate in channel.history(limit=100, oldest_first=True):
+            if bot_id is not None and candidate.author.id != bot_id:
+                continue
+            if candidate.embeds and marker in (candidate.embeds[0].title or ""):
+                await candidate.edit(embed=embed, view=FixedVerificationDashboardView(database))
+                return candidate
+    except discord.HTTPException:
+        pass
+
     return await channel.send(embed=embed, view=FixedVerificationDashboardView(database))

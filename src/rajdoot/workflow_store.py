@@ -87,6 +87,15 @@ class WorkflowStore:
             )
             return await cursor.fetchone()
 
+    async def fetch_latest_for_applicant(self, applicant_id: int) -> dict[str, Any] | None:
+        connection = await self._connection()
+        async with connection.cursor() as cursor:
+            await cursor.execute(
+                "select * from embassy_requests where applicant_discord_id = %s order by created_at desc limit 1",
+                (applicant_id,),
+            )
+            return await cursor.fetchone()
+
     async def issue_otp(self, request_id: str, otp_hash: str) -> dict[str, Any] | None:
         connection = await self._connection()
         async with connection.transaction():
