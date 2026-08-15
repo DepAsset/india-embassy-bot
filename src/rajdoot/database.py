@@ -105,6 +105,27 @@ class Database:
                 "indian_ambassadors": int(row.get("indian_ambassadors", 0)),
             }
 
+    async def fetch_all_active_embassy_members(self) -> list[dict[str, Any]]:
+        """Return the immutable embassy-member baseline with its Discord channel."""
+        await self.connect()
+        assert self._connection is not None
+        async with self._connection.cursor() as cursor:
+            await cursor.execute("""
+                select
+                    em.embassy_id,
+                    em.discord_user_id,
+                    em.discord_username,
+                    em.member_type,
+                    e.country_name,
+                    e.channel_id
+                from embassy_members em
+                join embassies e on e.id = em.embassy_id
+                where em.active = true
+                  and e.status = 'active'
+                order by e.country_name asc, em.member_type asc, em.discord_username asc
+            """)
+            return list(await cursor.fetchall())
+
     async def upsert_embassy_member(
         self,
         *,
