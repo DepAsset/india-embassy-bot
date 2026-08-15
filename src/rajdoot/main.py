@@ -11,6 +11,7 @@ from rajdoot.dashboards import DiplomatDashboardView, GovernmentEmbassyView
 from rajdoot.database import Database
 from rajdoot.embassy_members import EmbassyMemberImporter
 from rajdoot.fixed_dashboards import FixedDiplomatDashboardView, FixedGovernmentDashboardView
+from rajdoot.request_commands import EmbassyRequestCommands
 from rajdoot.ui import HomeView, ensure_dashboard_message
 
 
@@ -158,6 +159,7 @@ class RajdootBot(discord.Client):
         self.tree.add_command(government_command, guild=guild)
         self.tree.add_command(diplomat_command, guild=guild)
         self.tree.add_command(member_import_command, guild=guild)
+        self.tree.add_command(EmbassyRequestCommands(self.database), guild=guild)
         await self.tree.sync(guild=guild)
         logger.info("Guild dashboard commands synchronized")
         logger.info("Supabase PostgreSQL connection established")

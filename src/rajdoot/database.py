@@ -4,6 +4,7 @@ from typing import Any
 
 from psycopg import AsyncConnection
 from psycopg.rows import dict_row
+from psycopg.types.json import Jsonb
 
 
 class Database:
@@ -32,9 +33,8 @@ class Database:
         async with self._connection.cursor() as cursor:
             await cursor.execute("""
                 select id, country_id, country_name, channel_id, channel_name,
-                       category_id, status, display_order
-                from embassies where status = 'active'
-                order by country_name asc
+                       category_id, status, display_order from embassies
+                where status = 'active' order by country_name asc
             """)
             return list(await cursor.fetchall())
 
@@ -44,8 +44,7 @@ class Database:
         async with self._connection.cursor() as cursor:
             await cursor.execute("""
                 select id, country_id, country_name, channel_id, channel_name,
-                       category_id, status, display_order
-                from embassies
+                       category_id, status, display_order from embassies
                 order by status, display_order nulls last, country_name asc
             """)
             return list(await cursor.fetchall())
@@ -56,8 +55,7 @@ class Database:
         async with self._connection.cursor() as cursor:
             await cursor.execute("""
                 select role_id, role_name, embassy_id, disposition, notes
-                from embassy_legacy_roles
-                order by role_name asc, role_id asc
+                from embassy_legacy_roles order by role_name asc, role_id asc
             """)
             return list(await cursor.fetchall())
 
@@ -65,11 +63,7 @@ class Database:
         await self.connect()
         assert self._connection is not None
         async with self._connection.cursor() as cursor:
-            await cursor.execute("""
-                select frozen
-                from embassy_member_registry_state
-                where id = 1
-            """)
+            await cursor.execute("select frozen from embassy_member_registry_state where id = 1")
             row = await cursor.fetchone()
             return bool(row and row["frozen"])
 
@@ -81,9 +75,8 @@ class Database:
                 await cursor.execute("""
                     insert into embassy_member_registry_state (id, frozen, frozen_at)
                     values (1, true, now())
-                    on conflict (id) do update set
-                        frozen = true,
-                        frozen_at = coalesce(embassy_member_registry_state.frozen_at, now())
+                    on conflict (id) do update set frozen = true,
+                    frozen_at = coalesce(embassy_member_registry_state.frozen_at, now())
                 """)
 
     async def fetch_embassy_member_registry_counts(self) -> dict[str, int]:
@@ -91,71 +84,42 @@ class Database:
         assert self._connection is not None
         async with self._connection.cursor() as cursor:
             await cursor.execute("""
-                select
-                    count(*)::int as total,
+                select count(*)::int as total,
                     count(*) filter (where member_type = 'foreign_diplomat')::int as foreign_diplomats,
                     count(*) filter (where member_type = 'indian_ambassador')::int as indian_ambassadors
-                from embassy_members
-                where active = true
+                from embassy_members where active = true
             """)
             row = await cursor.fetchone() or {}
-            return {
-                "total": int(row.get("total", 0)),
-                "foreign_diplomats": int(row.get("foreign_diplomats", 0)),
-                "indian_ambassadors": int(row.get("indian_ambassadors", 0)),
-            }
+            return {"total": int(row.get("total", 0)), "foreign_diplomats": int(row.get("foreign_diplomats", 0)), "indian_ambassadors": int(row.get("indian_ambassadors", 0))}
 
     async def fetch_all_active_embassy_members(self) -> list[dict[str, Any]]:
-        """Return the immutable embassy-member baseline with its Discord channel."""
         await self.connect()
         assert self._connection is not None
         async with self._connection.cursor() as cursor:
             await cursor.execute("""
-                select
-                    em.embassy_id,
-                    em.discord_user_id,
-                    em.discord_username,
-                    em.member_type,
-                    e.country_name,
-                    e.channel_id
-                from embassy_members em
-                join embassies e on e.id = em.embassy_id
-                where em.active = true
-                  and e.status = 'active'
+                select em.embassy_id, em.discord_user_id, em.discord_username,
+                    em.member_type, e.country_name, e.channel_id
+                from embassy_members em join embassies e on e.id = em.embassy_id
+                where em.active = true and e.status = 'active'
                 order by e.country_name asc, em.member_type asc, em.discord_username asc
             """)
             return list(await cursor.fetchall())
 
-    async def upsert_embassy_member(
-        self,
-        *,
-        embassy_id: str,
-        discord_user_id: str,
-        discord_username: str,
-        member_type: str,
-        embassy_role_id: str,
-    ) -> bool:
-        """Insert/update an embassy assignment before the registry is frozen."""
+    async def upsert_embassy_member(self, *, embassy_id: str, discord_user_id: str,
+                                    discord_username: str, member_type: str, embassy_role_id: str) -> bool:
         await self.connect()
         assert self._connection is not None
         async with self._connection.transaction():
             async with self._connection.cursor() as cursor:
                 await cursor.execute("""
-                    insert into embassy_members (
-                        embassy_id, discord_user_id, discord_username,
-                        member_type, embassy_role_id, active
-                    ) values (%s::uuid, %s, %s, %s, %s, true)
+                    insert into embassy_members (embassy_id, discord_user_id, discord_username,
+                        member_type, embassy_role_id, active)
+                    values (%s::uuid, %s, %s, %s, %s, true)
                     on conflict (embassy_id, discord_user_id) do update set
-                        discord_username = excluded.discord_username,
-                        member_type = excluded.member_type,
-                        embassy_role_id = excluded.embassy_role_id,
-                        active = true,
-                        updated_at = now()
+                        discord_username = excluded.discord_username, member_type = excluded.member_type,
+                        embassy_role_id = excluded.embassy_role_id, active = true, updated_at = now()
                     returning (xmax = 0) as inserted
-                """, (
-                    embassy_id, discord_user_id, discord_username,
-                    member_type, embassy_role_id,
-                ))
+                """, (embassy_id, discord_user_id, discord_username, member_type, embassy_role_id))
                 row = await cursor.fetchone()
                 return bool(row and row["inserted"])
 
@@ -164,19 +128,14 @@ class Database:
         assert self._connection is not None
         async with self._connection.cursor() as cursor:
             await cursor.execute("""
-                select id, embassy_id, discord_user_id, discord_username,
-                       member_type, embassy_role_id, active, assigned_at, updated_at
-                from embassy_members
+                select id, embassy_id, discord_user_id, discord_username, member_type,
+                    embassy_role_id, active, assigned_at, updated_at from embassy_members
                 where embassy_id = %s::uuid and active = true
                 order by member_type asc, discord_username asc
             """, (embassy_id,))
             return list(await cursor.fetchall())
 
-    async def update_embassy_layout_state(
-        self,
-        updates: list[tuple[str, int, int, int]],
-    ) -> None:
-        """Persist desired category and channel ordering after Discord reconciliation."""
+    async def update_embassy_layout_state(self, updates: list[tuple[str, int, int, int]]) -> None:
         if not updates:
             return
         await self.connect()
@@ -184,14 +143,9 @@ class Database:
         async with self._connection.transaction():
             async with self._connection.cursor() as cursor:
                 await cursor.executemany("""
-                    update embassies
-                    set category_id = %s, channel_id = %s,
-                        display_order = %s, updated_at = now()
-                    where id = %s::uuid
-                """, [
-                    (category_id, channel_id, display_order, embassy_id)
-                    for embassy_id, category_id, channel_id, display_order in updates
-                ])
+                    update embassies set category_id = %s, channel_id = %s,
+                        display_order = %s, updated_at = now() where id = %s::uuid
+                """, [(category_id, channel_id, display_order, embassy_id) for embassy_id, category_id, channel_id, display_order in updates])
 
     async def fetch_embassy(self, embassy_id: str) -> dict[str, Any] | None:
         await self.connect()
@@ -199,8 +153,7 @@ class Database:
         async with self._connection.cursor() as cursor:
             await cursor.execute("""
                 select id, country_id, country_name, channel_id, channel_name,
-                       category_id, status, display_order
-                from embassies where id = %s::uuid
+                    category_id, status, display_order from embassies where id = %s::uuid
             """, (embassy_id,))
             return await cursor.fetchone()
 
@@ -211,37 +164,103 @@ class Database:
             await cursor.execute("select * from discord_configuration where guild_id = %s", (guild_id,))
             return await cursor.fetchone()
 
-    async def upsert_discord_configuration(
-        self,
-        *,
-        guild_id: int,
-        request_category_id: int | None = None,
-        logs_channel_id: int | None = None,
-        government_dashboard_channel_id: int | None = None,
-        government_dashboard_message_id: int | None = None,
-        diplomat_dashboard_channel_id: int | None = None,
-        diplomat_dashboard_message_id: int | None = None,
-    ) -> None:
+    async def upsert_discord_configuration(self, *, guild_id: int, request_category_id: int | None = None,
+                                           logs_channel_id: int | None = None,
+                                           government_dashboard_channel_id: int | None = None,
+                                           government_dashboard_message_id: int | None = None,
+                                           diplomat_dashboard_channel_id: int | None = None,
+                                           diplomat_dashboard_message_id: int | None = None) -> None:
         await self.connect()
         assert self._connection is not None
         async with self._connection.transaction():
             async with self._connection.cursor() as cursor:
                 await cursor.execute("""
-                    insert into discord_configuration (
-                        guild_id, request_category_id, logs_channel_id,
+                    insert into discord_configuration (guild_id, request_category_id, logs_channel_id,
                         government_dashboard_channel_id, government_dashboard_message_id,
-                        diplomat_dashboard_channel_id, diplomat_dashboard_message_id
-                    ) values (%s, %s, %s, %s, %s, %s, %s)
-                    on conflict (guild_id) do update set
-                        request_category_id = excluded.request_category_id,
+                        diplomat_dashboard_channel_id, diplomat_dashboard_message_id)
+                    values (%s, %s, %s, %s, %s, %s, %s)
+                    on conflict (guild_id) do update set request_category_id = excluded.request_category_id,
                         logs_channel_id = excluded.logs_channel_id,
                         government_dashboard_channel_id = excluded.government_dashboard_channel_id,
                         government_dashboard_message_id = excluded.government_dashboard_message_id,
                         diplomat_dashboard_channel_id = excluded.diplomat_dashboard_channel_id,
-                        diplomat_dashboard_message_id = excluded.diplomat_dashboard_message_id,
-                        updated_at = now()
-                """, (
-                    guild_id, request_category_id, logs_channel_id,
-                    government_dashboard_channel_id, government_dashboard_message_id,
-                    diplomat_dashboard_channel_id, diplomat_dashboard_message_id,
-                ))
+                        diplomat_dashboard_message_id = excluded.diplomat_dashboard_message_id, updated_at = now()
+                """, (guild_id, request_category_id, logs_channel_id, government_dashboard_channel_id,
+                      government_dashboard_message_id, diplomat_dashboard_channel_id, diplomat_dashboard_message_id))
+
+    async def create_embassy_request(self, *, applicant_discord_id: int, embassy_id: str,
+                                     warera_user_id: str | None = None, profile_url: str | None = None) -> dict[str, Any]:
+        await self.connect()
+        assert self._connection is not None
+        async with self._connection.transaction():
+            async with self._connection.cursor() as cursor:
+                await cursor.execute("""
+                    insert into embassy_requests (applicant_discord_id, warera_user_id, profile_url,
+                        embassy_id, verification_status, request_status)
+                    values (%s, %s, %s, %s::uuid, 'pending', 'created') returning *
+                """, (applicant_discord_id, warera_user_id, profile_url, embassy_id))
+                row = await cursor.fetchone()
+                assert row is not None
+                return dict(row)
+
+    async def fetch_embassy_request(self, request_id: str) -> dict[str, Any] | None:
+        await self.connect()
+        assert self._connection is not None
+        async with self._connection.cursor() as cursor:
+            await cursor.execute("select * from embassy_requests where id = %s::uuid", (request_id,))
+            return await cursor.fetchone()
+
+    async def fetch_latest_request_for_applicant(self, applicant_discord_id: int) -> dict[str, Any] | None:
+        await self.connect()
+        assert self._connection is not None
+        async with self._connection.cursor() as cursor:
+            await cursor.execute("""
+                select * from embassy_requests where applicant_discord_id = %s
+                order by created_at desc limit 1
+            """, (applicant_discord_id,))
+            return await cursor.fetchone()
+
+    async def mark_request_verifying(self, request_id: str) -> None:
+        await self.connect()
+        assert self._connection is not None
+        async with self._connection.cursor() as cursor:
+            await cursor.execute("""
+                update embassy_requests set verification_status = 'verifying',
+                    request_status = case when request_status = 'created' then 'verifying' else request_status end,
+                    verification_started_at = now(), updated_at = now() where id = %s::uuid
+            """, (request_id,))
+
+    async def mark_request_verified(self, request_id: str, *, warera_user_id: str,
+                                    profile_snapshot: dict[str, Any]) -> None:
+        await self.connect()
+        assert self._connection is not None
+        async with self._connection.transaction():
+            async with self._connection.cursor() as cursor:
+                await cursor.execute("""
+                    update embassy_requests set warera_user_id = %s,
+                        warera_profile_snapshot = %s::jsonb,
+                        verification_status = 'verified', request_status = 'pending_approval',
+                        verification_completed_at = now(), last_verification_error = null, updated_at = now()
+                    where id = %s::uuid
+                """, (warera_user_id, Jsonb(profile_snapshot), request_id))
+
+    async def mark_request_verification_failed(self, request_id: str, reason: str) -> None:
+        await self.connect()
+        assert self._connection is not None
+        async with self._connection.cursor() as cursor:
+            await cursor.execute("""
+                update embassy_requests set verification_status = 'failed', last_verification_error = %s,
+                    verification_attempts = least(verification_attempts + 1, verification_max_attempts),
+                    updated_at = now() where id = %s::uuid
+            """, (reason, request_id))
+
+    async def add_request_event(self, *, request_id: str, event_type: str,
+                                actor_discord_id: int | None = None, embassy_id: str | None = None,
+                                details: dict[str, Any] | None = None) -> None:
+        await self.connect()
+        assert self._connection is not None
+        async with self._connection.cursor() as cursor:
+            await cursor.execute("""
+                insert into request_events (request_id, event_type, actor_discord_id, embassy_id, details)
+                values (%s::uuid, %s, %s, %s::uuid, %s::jsonb)
+            """, (request_id, event_type, actor_discord_id, embassy_id, Jsonb(details or {})))
