@@ -17,13 +17,35 @@ RAJDOOT is the Embassy access and diplomatic management system for the WarEra Di
 
 ## Current build state
 
-The repository has been reset for the new system. The first implementation step is the Supabase PostgreSQL foundation.
+The new Embassy System foundation and first end-to-end access workflow are implemented on the feature branch.
+
+### Implemented chunks
+
+1. Canonical embassy/member registry and legacy-role reconciliation baseline.
+2. Supabase-backed embassy access requests and durable request state.
+3. WarEra full-profile lookup and company-based OTP verification.
+4. Five-attempt verification guard with 30-minute OTP expiry and audit events.
+5. Own-country vs other-country embassy routing.
+6. Government-official auto-approval for President, Vice President and Minister of Foreign Affairs when requesting their own-country embassy.
+7. Pre-approval records that can be consumed automatically by a matching visitor request.
+8. Automatic embassy creation/revival path when an own-country embassy does not exist.
+9. Persistent embassy approval controls that are re-registered after bot restart.
+10. Ambassador/diplomat assignment lifecycle, direct Discord permissions, welcome messages and revocation.
+11. Top-level diplomacy commands: `/assignambassador`, `/dismissambassador`, `/removediplomat`, `/listembassies`, `/listdiplomats`, `/diplomatprofile`.
+12. Automated Ruff + pytest CI gate.
 
 ## Database
 
-The initial migration is in `supabase/migrations/0001_initial_schema.sql`.
+The migration chain is in `supabase/migrations/`.
 
-Run the migration in the Supabase SQL Editor before starting the application layer. The schema intentionally follows the data model already established in the project discussion and avoids inventing additional business rules that have not been finalized.
+Apply migrations in order in the Supabase SQL Editor before running the application layer.
+
+Important workflow migrations include:
+
+- `20260815_embassy_members.sql`
+- `20260815_embassy_request_flow.sql`
+- `20260815_embassy_flow_v2.sql`
+- `20260815_embassy_request_guard.sql`
 
 ## Planned application layers
 
@@ -36,11 +58,17 @@ Interaction and navigation layer
     v
 Domain services
     |
-    +---- Supabase PostgreSQL
+    +---- Supabase PostgreSQL  <-- source of truth
     |
-    +---- WarEra integration
+    +---- WarEra integration   <-- identity/profile/company data
     |
-    +---- Discord access projection
+    +---- Discord projection   <-- roles, permissions, channels
 ```
 
-The application will be built around reusable dashboard components, domain services, persistent request state, access assignments, audit events, and rate-aware Discord workers.
+## Next build chunks
+
+- Visitor access / embassy visit workflow.
+- Government Control Center request queue and statistics.
+- Diplomat profile dashboard and embassy member management UI.
+- Logs/audit dashboard with filtering and request timeline.
+- Reconciliation and production hardening.
