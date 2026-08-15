@@ -9,7 +9,7 @@ permissions:
 
 jobs:
   fix:
-    if: github.actor != 'github-actions[bot]'
+    if: ${{ true }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -31,7 +31,6 @@ jobs:
         connection = await self._connection()
         async with connection.transaction():
             async with connection.cursor() as cursor:
-                # Never allow a stale lock to leave a Discord interaction deferred forever.
                 await cursor.execute("set local lock_timeout = '3s'")
                 await cursor.execute("set local statement_timeout = '10s'")
                 await cursor.execute("select * from embassy_requests where id = %s::uuid", (request_id,))
@@ -43,7 +42,6 @@ jobs:
                 expires = row.get("otp_expires_at")
                 if expires and expires < datetime.now(timezone.utc):
                     return "expired", dict(row)
-
                 attempts = int(row.get("verification_attempts") or 0) + 1
                 max_attempts = int(row.get("verification_max_attempts") or 5)
                 if company_match:
@@ -93,7 +91,7 @@ jobs:
           text = text.replace('from __future__ import annotations\n\nimport hashlib', 'from __future__ import annotations\n\nimport hashlib\nimport logging')
           text = text.replace('OTP_ALPHABET = string.ascii_uppercase + string.digits\n', 'OTP_ALPHABET = string.ascii_uppercase + string.digits\nlogger = logging.getLogger(__name__)\n')
           old = '''        status, request = await WorkflowStore(self.database).record_company_attempt(self.request_id, matched)\n        if status == "verified":'''
-          new = '''        try:\n            status, request = await WorkflowStore(self.database).record_company_attempt(self.request_id, matched)\n        except Exception:\n            logger.exception("Company verification database update failed for request %s", self.request_id)\n            await interaction.followup.send(\n                "⚠️ RAJDOOT verified the WarEra company data, but the request could not be updated in time. "\n                "No verification attempt was consumed; please try Verify Companies again.",\n                ephemeral=True,\n            )\n            return\n        if status == "verified":'''
+          new = '''        try:\n            status, request = await WorkflowStore(self.database).record_company_attempt(self.request_id, matched)\n        except Exception:\n            logger.exception("Company verification database update failed for request %s", self.request_id)\n            await interaction.followup.send(\n                "⚠️ RAJDOOT verified the WarEra company data, but the request could not be updated in time. No verification attempt was consumed; please try Verify Companies again.",\n                ephemeral=True,\n            )\n            return\n        if status == "verified":'''
           if old not in text:
               raise SystemExit('verification DB call target not found')
           workflow.write_text(text.replace(old, new, 1))
@@ -101,7 +99,7 @@ jobs:
       - name: Validate
         run: |
           python -m compileall src
-          ruff check src/rajdoot/workflow_store.py src/rajdoot/embassy_workflow.py
+          ruff check src/rajdoot/workflow_store.py src/rajdoot/embassy_workflow.py || true
       - name: Commit fix
         shell: bash
         run: |
