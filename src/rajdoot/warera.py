@@ -24,6 +24,7 @@ class WarEraClient:
         self.full_profile_path = settings.warera_api_full_profile_path
         self.companies_path = settings.warera_api_companies_path
         self.company_path = settings.warera_api_company_path
+        self.country_path = settings.warera_api_country_path
         self.token = settings.warera_api_token
 
     def _headers(self) -> dict[str, str]:
@@ -73,7 +74,51 @@ class WarEraClient:
         profile = self._unwrap(payload)
         if not isinstance(profile, dict):
             return None
+
+        # WarEra's full-user response can expose the country only as an ID.
+        # Resolve that ID immediately so every downstream workflow step uses
+        # the canonical country name and ID rather than displaying raw ObjectIds.
+        country_value = profile.get("country")
+        country_id = None
+        if isinstance(country_value, dict):
+            country_id = country_value.get("_id") or country_value.get("id") or country_value.get("countryId")
+            if country_value.get("name"):
+                country_id = country_id or None
+        elif isinstance(country_value, str):
+            country_id = country_value
+        if not country_id:
+            country_id = profile.get("countryId") or profile.get("citizenshipId")
+            infos = profile.get("infos")
+            if isinstance(infos, dict):
+                country_id = country_id or infos.get("countryId")
+
+        if country_id and not (isinstance(country_value, dict) and country_value.get("name")):
+            try:
+                country_payload = await self._post(self.country_path, {"countryId": str(country_id)})
+                country = self._unwrap(country_payload)
+                if isinstance(country, dict) and country.get("name"):
+                    profile["country"] = {
+                        "id": str(country.get("_id") or country.get("id") or country_id),
+                        "name": str(country["name"]),
+                    }
+                    profile["countryName"] = str(country["name"])
+            except httpx.HTTPStatusError as exc:
+                # Profile verification should not fail just because the optional
+                # country enrichment endpoint is unavailable.
+                if exc.response.status_code != 404:
+                    raise
+
         return WarEraProfile(user_id=str(user_id), raw=profile)
+
+    async def get_country_by_id(self, country_id: str) -> dict[str, Any] | None:
+        try:
+            payload = await self._post(self.country_path, {"countryId": str(country_id)})
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                return None
+            raise
+        country = self._unwrap(payload)
+        return country if isinstance(country, dict) else None
 
     async def get_companies(self, user_id: str) -> list[dict[str, Any]]:
         """Return every company reference from every company.getCompanies page.
