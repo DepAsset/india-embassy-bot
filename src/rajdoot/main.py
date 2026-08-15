@@ -117,8 +117,9 @@ class RajdootBot(discord.Client):
                 f"🌍 Foreign Diplomats added: **{result.foreign_diplomats}**\n"
                 f"🇮🇳 Indian Ambassadors added: **{result.indian_ambassadors}**\n"
                 f"♻️ Existing assignments refreshed: **{result.unchanged}**\n"
+                f"🚪 Assignments no longer holding the access role: **{result.deactivated}**\n"
                 f"⚠️ Embassies without a matched access role: **{result.unmatched_embassies}**\n\n"
-                "The importer only read existing Discord roles/memberships and stored the assignment in Supabase. Nothing was deleted, moved, or permission-changed.",
+                "Classification is based on the embassy-specific access role plus the Indian Citizen role. The importer only reads Discord memberships and updates the Supabase registry; it does not change Discord roles, permissions, channels, or memberships.",
                 ephemeral=True,
             )
 
@@ -257,27 +258,3 @@ class RajdootBot(discord.Client):
             diplomat_dashboard_channel_id=int(diplomat_channel_id) if diplomat_channel_id else None,
             diplomat_dashboard_message_id=int(diplomat_message_id) if diplomat_message_id else None,
         )
-
-    async def close(self) -> None:
-        await self.database.close()
-        await super().close()
-
-
-async def run() -> None:
-    health_server = start_health_server()
-    database = Database(settings.database_url)
-    bot = RajdootBot(database)
-    try:
-        await bot.start(settings.discord_token)
-    finally:
-        health_server.shutdown()
-        health_server.server_close()
-        await database.close()
-
-
-def main() -> None:
-    asyncio.run(run())
-
-
-if __name__ == "__main__":
-    main()
