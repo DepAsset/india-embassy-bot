@@ -59,6 +59,7 @@ class RajdootBot(discord.Client):
         super().__init__(intents=intents)
         self.database = database
         self.tree = app_commands.CommandTree(self)
+        self._member_baseline_done = False
 
     async def _register_pending_approval_views(self) -> None:
         connection = self.database._connection
@@ -86,6 +87,27 @@ class RajdootBot(discord.Client):
             )
         if rows:
             logger.info("Registered %s persistent embassy approval views", len(rows))
+
+    async def _ensure_member_baseline(self, guild: discord.Guild) -> None:
+        if self._member_baseline_done:
+            return
+        self._member_baseline_done = True
+        try:
+            result = await EmbassyMemberImporter().import_current_members(guild, self.database)
+            logger.info(
+                "Embassy member baseline ready: scanned=%s roles=%s assignments=%s foreign_diplomats=%s indian_ambassadors=%s permissions_applied=%s failures=%s frozen=%s",
+                result.embassies_scanned,
+                result.access_roles_found,
+                result.assignments_seen,
+                result.foreign_diplomats,
+                result.indian_ambassadors,
+                result.permissions_applied,
+                result.permission_failures,
+                result.already_frozen or not result.permission_failures,
+            )
+        except Exception:
+            self._member_baseline_done = False
+            logger.exception("Embassy member baseline failed; registry remains retryable")
 
     async def setup_hook(self) -> None:
         await self.database.connect()
@@ -134,7 +156,6 @@ class RajdootBot(discord.Client):
             callback=show_diplomat_dashboard,
         )
 
-        # Exactly three user-facing slash commands exist. All workflows live inside dashboards.
         self.tree.add_command(verification_command, guild=guild)
         self.tree.add_command(government_command, guild=guild)
         self.tree.add_command(diplomat_command, guild=guild)
@@ -149,6 +170,7 @@ class RajdootBot(discord.Client):
             return
         logger.info("Logged in as %s", self.user)
         logger.info("Connected to guild: %s (%s)", guild.name, guild.id)
+        await self._ensure_member_baseline(guild)
         await self._ensure_dashboards(guild)
 
     async def _show_fixed_dashboard(self, interaction: discord.Interaction, kind: str) -> None:
@@ -229,7 +251,7 @@ class RajdootBot(discord.Client):
                     message_id=int(government_message_id) if government_message_id else None,
                     embed=discord.Embed(
                         title="🏛️ RAJDOOT Government Control Center",
-                        description="Fixed Government Control Center. Buttons open working messages below. Use **/government-dashboard** to return here.",
+                        description="Fixed Government Control Center. Buttons open private working panels. Use **/government-dashboard** to return here.",
                         colour=discord.Colour.blurple(),
                     ),
                     view=FixedGovernmentDashboardView(self.database),
@@ -245,7 +267,7 @@ class RajdootBot(discord.Client):
                     message_id=int(diplomat_message_id) if diplomat_message_id else None,
                     embed=discord.Embed(
                         title="🌍 RAJDOOT Diplomatic Center",
-                        description="Fixed Diplomatic Center. Buttons open working messages below. Use **/diplomat-dashboard** to return here.",
+                        description="Fixed Diplomatic Center. Buttons open private working panels. Use **/diplomat-dashboard** to return here.",
                         colour=discord.Colour.blurple(),
                     ),
                     view=FixedDiplomatDashboardView(self.database),
