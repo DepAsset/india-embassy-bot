@@ -21,8 +21,7 @@ class Database:
             await self._connection.close()
 
     async def ping(self) -> None:
-        await self.connect()
-        assert self._connection is not None
+        await self.connect(); assert self._connection is not None
         async with self._connection.cursor() as cursor:
             await cursor.execute("select 1")
             await cursor.fetchone()
@@ -144,6 +143,61 @@ class Database:
         async with self._connection.cursor() as cursor:
             await cursor.execute("select * from embassy_requests where applicant_discord_id = %s order by created_at desc limit 1", (applicant_discord_id,))
             return await cursor.fetchone()
+
+    async def fetch_pending_requests_for_government(self) -> list[dict[str, Any]]:
+        await self.connect(); assert self._connection is not None
+        async with self._connection.cursor() as cursor:
+            await cursor.execute("""
+                select r.*, e.country_name, e.channel_id, e.channel_name,
+                       e.category_id, e.status as embassy_status
+                from embassy_requests r
+                join embassies e on e.id = r.embassy_id
+                where r.request_status = 'pending_approval'
+                  and e.status = 'active'
+                order by r.created_at asc
+            """)
+            return list(await cursor.fetchall())
+
+    async def decide_embassy_request_as_government(self, *, request_id: str, actor_discord_id: int, decision: str, assignment_type: str | None = None, reason: str | None = None) -> dict[str, Any]:
+        if decision not in {"approved", "rejected"}:
+            raise ValueError("decision must be approved or rejected")
+        await self.connect(); assert self._connection is not None
+        async with self._connection.transaction():
+            async with self._connection.cursor() as cursor:
+                await cursor.execute("select r.*, e.country_name from embassy_requests r join embassies e on e.id = r.embassy_id where r.id = %s::uuid for update of r", (request_id,))
+                request = await cursor.fetchone()
+                if request is None:
+                    raise LookupError("Embassy request not found")
+                if request["request_status"] != "pending_approval":
+                    raise ValueError("Embassy request is no longer awaiting approval")
+                if decision == "approved":
+                    if assignment_type not in {"foreign_diplomat", "indian_ambassador"}:
+                        raise ValueError("assignment_type is required for approval")
+                    await cursor.execute("""
+                        insert into embassy_assignments
+                            (user_discord_id, embassy_id, assignment_type, status, granted_by_discord_id)
+                        values (%s, %s::uuid, %s, 'active', %s)
+                        on conflict (user_discord_id, embassy_id) where status = 'active'
+                        do update set assignment_type = excluded.assignment_type,
+                                      granted_by_discord_id = excluded.granted_by_discord_id,
+                                      granted_at = now(), updated_at = now()
+                    """, (request["applicant_discord_id"], request["embassy_id"], assignment_type, actor_discord_id))
+                    request_status = "approved"
+                else:
+                    request_status = "rejected"
+                await cursor.execute("""
+                    update embassy_requests
+                    set request_status = %s,
+                        decision_actor_discord_id = %s,
+                        decision_reason = %s,
+                        decided_at = now(),
+                        completed_at = case when %s = 'approved' then now() else completed_at end,
+                        updated_at = now()
+                    where id = %s::uuid
+                    returning *
+                """, (request_status, actor_discord_id, reason, request_status, request_id))
+                result = await cursor.fetchone(); assert result is not None
+                return dict(result)
 
     async def fetch_pending_requests_for_member(self, discord_user_id: int) -> list[dict[str, Any]]:
         await self.connect(); assert self._connection is not None
