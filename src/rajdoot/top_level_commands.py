@@ -8,6 +8,49 @@ from rajdoot.embassy_access import EmbassyAccessService, EmbassySelectView, has_
 from rajdoot.workflow_store import WorkflowStore
 
 
+class AmbassadorSelectView(discord.ui.View):
+    def __init__(self, database: Database, member: discord.Member) -> None:
+        super().__init__(timeout=300)
+        self.database = database
+        self.member = member
+        self.select = discord.ui.Select(placeholder="Select one or more embassies", min_values=1, max_values=25, options=[])
+        self.select.callback = self._callback
+        self.add_item(self.select)
+
+    async def populate(self) -> None:
+        embassies = await self.database.fetch_active_embassies()
+        self.select.options = [
+            discord.SelectOption(label=str(e["country_name"])[:100], value=str(e["id"]))
+            for e in embassies[:25]
+        ]
+
+    async def _callback(self, interaction: discord.Interaction) -> None:
+        if not isinstance(interaction.user, discord.Member) or not is_government(interaction.user):
+            await interaction.response.send_message("🔐 Only Admin/EAM can complete this assignment.", ephemeral=True)
+            return
+        if not has_ambassador_role(self.member):
+            await interaction.response.send_message("❌ The selected user no longer has the Ambassador role.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        embassies = {str(e["id"]): e for e in await self.database.fetch_active_embassies()}
+        service = EmbassyAccessService(self.database)
+        changed = 0
+        for embassy_id in self.select.values:
+            embassy = embassies.get(embassy_id)
+            if embassy is None:
+                continue
+            await service.grant(
+                interaction.guild,
+                self.member,
+                embassy,
+                actor_id=interaction.user.id,
+                assignment_type="indian_ambassador",
+            )
+            changed += 1
+        await interaction.followup.send(f"✅ Ambassador access assigned for **{changed}** embassy/embassies.", ephemeral=True)
+        self.stop()
+
+
 def register_top_level_commands(tree: app_commands.CommandTree, database: Database, guild: discord.Object) -> None:
     store = WorkflowStore(database)
 
@@ -19,7 +62,7 @@ def register_top_level_commands(tree: app_commands.CommandTree, database: Databa
         if not has_ambassador_role(user):
             await interaction.response.send_message("❌ The selected user does not have the Ambassador role.", ephemeral=True)
             return
-        view = EmbassySelectView(database, member=user, action="assign")
+        view = AmbassadorSelectView(database, user)
         await view.populate()
         await interaction.response.send_message("🏛️ Select one or more embassy channels to assign:", view=view, ephemeral=True)
 
@@ -78,7 +121,8 @@ def register_top_level_commands(tree: app_commands.CommandTree, database: Databa
         if not is_government(interaction.user):
             own = await store.active_assignments_for_user(interaction.user.id)
             target = await store.active_assignments_for_user(user.id)
-            if not any(str(a["embassy_id"]) in {str(x["embassy_id"]) for x in own} for a in target):
+            own_ids = {str(a["embassy_id"]) for a in own}
+            if not any(str(a["embassy_id"]) in own_ids for a in target):
                 await interaction.response.send_message("🔐 You cannot inspect that diplomat's profile.", ephemeral=True)
                 return
         assignments = await store.active_assignments_for_user(user.id)
