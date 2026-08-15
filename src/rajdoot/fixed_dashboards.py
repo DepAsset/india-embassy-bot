@@ -5,6 +5,7 @@ import discord
 from rajdoot.database import Database
 from rajdoot.dashboards import GovernmentEmbassyView
 from rajdoot.embassy_workflow import PersistentApprovalView, profile_embed
+from rajdoot.government_workflow import government_requests_embed
 from rajdoot.ui import embassy_directory_embed
 
 
@@ -21,8 +22,6 @@ class FixedGovernmentDashboardView(discord.ui.View):
         )
 
     async def _open(self, interaction: discord.Interaction, *, embed: discord.Embed, view: discord.ui.View | None = None) -> None:
-        # The fixed dashboard stays visible in its designated channel, but every
-        # working panel opened from it is private to the person who clicked it.
         if not self._authorized(interaction):
             await interaction.response.send_message(
                 "🔐 You are not authorized to use the Government Control Center.",
@@ -36,7 +35,11 @@ class FixedGovernmentDashboardView(discord.ui.View):
 
     @discord.ui.button(label="Pending Requests", emoji="📥", style=discord.ButtonStyle.primary, custom_id="rajdoot:fixed:government:requests")
     async def requests(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
-        await self._open(interaction, embed=discord.Embed(title="📥 Pending Requests", description="Government-routed embassy access requests will appear here as a private working panel.", colour=discord.Colour.blurple()))
+        if not self._authorized(interaction):
+            await interaction.response.send_message("🔐 You are not authorized to use the Government Control Center.", ephemeral=True)
+            return
+        embed, view = await government_requests_embed(self.database)
+        await self._open(interaction, embed=embed, view=view)
 
     @discord.ui.button(label="Manage Embassies", emoji="🏛️", style=discord.ButtonStyle.primary, custom_id="rajdoot:fixed:government:embassies")
     async def embassies(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
@@ -64,8 +67,6 @@ class FixedDiplomatDashboardView(discord.ui.View):
         self.database = database
 
     async def _open(self, interaction: discord.Interaction, *, embed: discord.Embed, view: discord.ui.View | None = None) -> None:
-        # The fixed dashboard remains in the embassy channel; working panels
-        # are ephemeral so other members cannot see another diplomat's data.
         if view is None:
             await interaction.response.send_message(embed=embed, ephemeral=True)
         else:
