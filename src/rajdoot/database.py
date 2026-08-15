@@ -79,7 +79,7 @@ class Database:
                     insert into embassy_members (
                         embassy_id, discord_user_id, discord_username,
                         member_type, embassy_role_id, active
-                    ) values (%s, %s, %s, %s, %s, true)
+                    ) values (%s::uuid, %s, %s, %s, %s, true)
                     on conflict (embassy_id, discord_user_id) do update set
                         discord_username = excluded.discord_username,
                         member_type = excluded.member_type,
@@ -110,7 +110,7 @@ class Database:
                     await cursor.execute("""
                         update embassy_members
                         set active = false, updated_at = now()
-                        where embassy_id = %s
+                        where embassy_id = %s::uuid
                           and embassy_role_id = %s
                           and active = true
                           and not (discord_user_id = any(%s))
@@ -119,7 +119,7 @@ class Database:
                     await cursor.execute("""
                         update embassy_members
                         set active = false, updated_at = now()
-                        where embassy_id = %s
+                        where embassy_id = %s::uuid
                           and embassy_role_id = %s
                           and active = true
                     """, (embassy_id, embassy_role_id))
@@ -133,7 +133,7 @@ class Database:
                 select id, embassy_id, discord_user_id, discord_username,
                        member_type, embassy_role_id, active, assigned_at, updated_at
                 from embassy_members
-                where embassy_id = %s and active = true
+                where embassy_id = %s::uuid and active = true
                 order by member_type asc, discord_username asc
             """, (embassy_id,))
             return list(await cursor.fetchall())
@@ -153,7 +153,7 @@ class Database:
                     update embassies
                     set category_id = %s, channel_id = %s,
                         display_order = %s, updated_at = now()
-                    where id = %s
+                    where id = %s::uuid
                 """, [
                     (category_id, channel_id, display_order, embassy_id)
                     for embassy_id, category_id, channel_id, display_order in updates
@@ -166,7 +166,7 @@ class Database:
             await cursor.execute("""
                 select id, country_id, country_name, channel_id, channel_name,
                        category_id, status, display_order
-                from embassies where id = %s
+                from embassies where id = %s::uuid
             """, (embassy_id,))
             return await cursor.fetchone()
 
