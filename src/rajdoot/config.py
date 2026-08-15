@@ -8,6 +8,7 @@ class Settings(BaseSettings):
     database_url: str
 
     request_category_id: int | None = None
+    request_channel_id: int | None = None
     logs_channel_id: int | None = None
     government_dashboard_channel_id: int | None = None
     government_dashboard_message_id: int | None = None
@@ -18,9 +19,20 @@ class Settings(BaseSettings):
         default=None,
         validation_alias=AliasChoices("ROLE_INDIAN_CITIZEN_ID", "INDIAN_CITIZEN_ROLE_ID"),
     )
+    foreign_diplomat_role_id: int | None = None
+    ambassador_role_id: int | None = None
+
+    # Government/EAM role names are intentionally configurable because the
+    # server's Discord role IDs can change while the diplomatic rules do not.
+    eam_role_name: str = "EAM"
+    government_notify_role_names: str = (
+        "President,Vice President,National Security Advisor,Minister,EAM"
+    )
 
     warera_api_base_url: str = "https://api2.warera.io"
     warera_api_profile_path: str = "/trpc/user.getUserLite"
+    warera_api_full_profile_path: str = "/trpc/user.getUserById"
+    warera_api_companies_path: str = "/trpc/company.getCompanies"
     warera_api_token: str | None = None
 
     health_host: str = "0.0.0.0"
