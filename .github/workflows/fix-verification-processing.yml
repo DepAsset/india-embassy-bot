@@ -1,0 +1,112 @@
+name: Fix verification processing
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Patch verification flow
+        shell: python
+        run: |
+          from pathlib import Path
+          import re
+
+          store = Path('src/rajdoot/workflow_store.py')
+          text = store.read_text()
+          pattern = re.compile(r"    async def record_company_attempt\(.*?(?=\n    async def find_preapproval)", re.S)
+          replacement = '''    async def record_company_attempt(self, request_id: str, company_match: bool) -> tuple[str, dict[str, Any] | None]:
+        connection = await self._connection()
+        async with connection.transaction():
+            async with connection.cursor() as cursor:
+                # Never allow a stale lock to leave a Discord interaction deferred forever.
+                await cursor.execute("set local lock_timeout = '3s'")
+                await cursor.execute("set local statement_timeout = '10s'")
+                await cursor.execute("select * from embassy_requests where id = %s::uuid", (request_id,))
+                row = await cursor.fetchone()
+                if row is None:
+                    return "missing", None
+                if row["request_status"] in {"failed", "approved", "rejected", "cancelled"}:
+                    return "closed", dict(row)
+                expires = row.get("otp_expires_at")
+                if expires and expires < datetime.now(timezone.utc):
+                    return "expired", dict(row)
+
+                attempts = int(row.get("verification_attempts") or 0) + 1
+                max_attempts = int(row.get("verification_max_attempts") or 5)
+                if company_match:
+                    await cursor.execute(
+                        """
+                        update embassy_requests
+                        set verification_attempts = %s, verification_status = 'verified', request_status = 'created',
+                            flow_stage = 'embassy_selection', verification_completed_at = now(),
+                            last_verification_error = null, updated_at = now()
+                        where id = %s::uuid returning *
+                        """,
+                        (attempts, request_id),
+                    )
+                    verified = await cursor.fetchone()
+                    return "verified", dict(verified) if verified else None
+                if attempts >= max_attempts:
+                    await cursor.execute(
+                        """
+                        update embassy_requests
+                        set verification_attempts = %s, verification_status = 'failed', request_status = 'failed',
+                            flow_stage = 'verification_failed',
+                            last_verification_error = 'Maximum company verification attempts reached', updated_at = now()
+                        where id = %s::uuid returning *
+                        """,
+                        (attempts, request_id),
+                    )
+                    failed = await cursor.fetchone()
+                    return "max_attempts", dict(failed) if failed else None
+                await cursor.execute(
+                    """
+                    update embassy_requests
+                    set verification_attempts = %s, last_verification_error = 'Company OTP not found', updated_at = now()
+                    where id = %s::uuid returning *
+                    """,
+                    (attempts, request_id),
+                )
+                retry = await cursor.fetchone()
+                return "invalid", dict(retry) if retry else None
+'''
+          text2, count = pattern.subn(replacement, text, count=1)
+          if count != 1:
+              raise SystemExit('record_company_attempt target not found')
+          store.write_text(text2)
+
+          workflow = Path('src/rajdoot/embassy_workflow.py')
+          text = workflow.read_text()
+          text = text.replace('from __future__ import annotations\n\nimport hashlib', 'from __future__ import annotations\n\nimport hashlib\nimport logging')
+          text = text.replace('OTP_ALPHABET = string.ascii_uppercase + string.digits\n', 'OTP_ALPHABET = string.ascii_uppercase + string.digits\nlogger = logging.getLogger(__name__)\n')
+          old = '''        status, request = await WorkflowStore(self.database).record_company_attempt(self.request_id, matched)\n        if status == "verified":'''
+          new = '''        try:\n            status, request = await WorkflowStore(self.database).record_company_attempt(self.request_id, matched)\n        except Exception:\n            logger.exception("Company verification database update failed for request %s", self.request_id)\n            await interaction.followup.send(\n                "⚠️ RAJDOOT verified the WarEra company data, but the request could not be updated in time. "\n                "No verification attempt was consumed; please try Verify Companies again.",\n                ephemeral=True,\n            )\n            return\n        if status == "verified":'''
+          if old not in text:
+              raise SystemExit('verification DB call target not found')
+          workflow.write_text(text.replace(old, new, 1))
+
+      - name: Validate
+        run: |
+          python -m compileall src
+          ruff check src/rajdoot/workflow_store.py src/rajdoot/embassy_workflow.py
+      - name: Commit fix
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/rajdoot/workflow_store.py src/rajdoot/embassy_workflow.py
+          git commit -m "Prevent company verification from hanging" || exit 0
+          git push
