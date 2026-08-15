@@ -13,19 +13,37 @@ class FixedGovernmentDashboardView(discord.ui.View):
         super().__init__(timeout=None)
         self.database = database
 
+    @staticmethod
+    def _authorized(interaction: discord.Interaction) -> bool:
+        return isinstance(interaction.user, discord.Member) and (
+            interaction.user.guild_permissions.manage_guild
+            or interaction.user.guild_permissions.administrator
+        )
+
     async def _open(self, interaction: discord.Interaction, *, embed: discord.Embed, view: discord.ui.View | None = None) -> None:
+        # The fixed dashboard stays visible in its designated channel, but every
+        # working panel opened from it is private to the person who clicked it.
+        if not self._authorized(interaction):
+            await interaction.response.send_message(
+                "🔐 You are not authorized to use the Government Control Center.",
+                ephemeral=True,
+            )
+            return
         if view is None:
-            await interaction.response.send_message(embed=embed)
+            await interaction.response.send_message(embed=embed, ephemeral=True)
         else:
-            await interaction.response.send_message(embed=embed, view=view)
+            await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
     @discord.ui.button(label="Pending Requests", emoji="📥", style=discord.ButtonStyle.primary, custom_id="rajdoot:fixed:government:requests")
     async def requests(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
-        await self._open(interaction, embed=discord.Embed(title="📥 Pending Requests", description="Government-routed embassy access requests will appear here as working messages.", colour=discord.Colour.blurple()))
+        await self._open(interaction, embed=discord.Embed(title="📥 Pending Requests", description="Government-routed embassy access requests will appear here as a private working panel.", colour=discord.Colour.blurple()))
 
     @discord.ui.button(label="Manage Embassies", emoji="🏛️", style=discord.ButtonStyle.primary, custom_id="rajdoot:fixed:government:embassies")
     async def embassies(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
-        await interaction.response.send_message(embed=await embassy_directory_embed(self.database), view=GovernmentEmbassyView(self.database))
+        if not self._authorized(interaction):
+            await interaction.response.send_message("🔐 You are not authorized to use the Government Control Center.", ephemeral=True)
+            return
+        await interaction.response.send_message(embed=await embassy_directory_embed(self.database), view=GovernmentEmbassyView(self.database), ephemeral=True)
 
     @discord.ui.button(label="Manage Diplomats", emoji="👥", style=discord.ButtonStyle.primary, custom_id="rajdoot:fixed:government:diplomats")
     async def diplomats(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
@@ -46,10 +64,12 @@ class FixedDiplomatDashboardView(discord.ui.View):
         self.database = database
 
     async def _open(self, interaction: discord.Interaction, *, embed: discord.Embed, view: discord.ui.View | None = None) -> None:
+        # The fixed dashboard remains in the embassy channel; working panels
+        # are ephemeral so other members cannot see another diplomat's data.
         if view is None:
-            await interaction.response.send_message(embed=embed)
+            await interaction.response.send_message(embed=embed, ephemeral=True)
         else:
-            await interaction.response.send_message(embed=embed, view=view)
+            await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
     @discord.ui.button(label="My Profile", emoji="👤", style=discord.ButtonStyle.primary, custom_id="rajdoot:fixed:diplomat:profile")
     async def profile(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
@@ -57,7 +77,7 @@ class FixedDiplomatDashboardView(discord.ui.View):
 
     @discord.ui.button(label="My Embassies", emoji="🏛️", style=discord.ButtonStyle.primary, custom_id="rajdoot:fixed:diplomat:embassies")
     async def embassies(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
-        await interaction.response.send_message(embed=await embassy_directory_embed(self.database))
+        await interaction.response.send_message(embed=await embassy_directory_embed(self.database), ephemeral=True)
 
     @discord.ui.button(label="Pending Requests", emoji="📥", style=discord.ButtonStyle.success, custom_id="rajdoot:fixed:diplomat:requests")
     async def pending_requests(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
