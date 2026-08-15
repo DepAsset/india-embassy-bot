@@ -258,3 +258,19 @@ class RajdootBot(discord.Client):
             diplomat_dashboard_channel_id=int(diplomat_channel_id) if diplomat_channel_id else None,
             diplomat_dashboard_message_id=int(diplomat_message_id) if diplomat_message_id else None,
         )
+
+
+async def _run() -> None:
+    database = Database(settings.database_url)
+    health_server = start_health_server()
+    bot = RajdootBot(database)
+    try:
+        await bot.start(settings.discord_token)
+    finally:
+        health_server.shutdown()
+        await database.close()
+
+
+def main() -> None:
+    """Console-script entry point for the RAJDOOT bot."""
+    asyncio.run(_run())
