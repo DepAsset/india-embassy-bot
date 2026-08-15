@@ -19,6 +19,11 @@ def test_country_handles_nested_country_object() -> None:
     assert country(profile) == ("7", "Italy")
 
 
+def test_country_handles_country_id_with_resolved_name() -> None:
+    profile = {"country": {"id": "6813b6d546e731854c7ac862", "name": "India"}}
+    assert country(profile) == ("6813b6d546e731854c7ac862", "India")
+
+
 def test_otp_is_six_alphanumeric_characters() -> None:
     value = otp()
     assert len(value) == 6
