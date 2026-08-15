@@ -61,6 +61,50 @@ class Database:
             """)
             return list(await cursor.fetchall())
 
+    async def embassy_member_registry_is_frozen(self) -> bool:
+        await self.connect()
+        assert self._connection is not None
+        async with self._connection.cursor() as cursor:
+            await cursor.execute("""
+                select frozen
+                from embassy_member_registry_state
+                where id = 1
+            """)
+            row = await cursor.fetchone()
+            return bool(row and row["frozen"])
+
+    async def freeze_embassy_member_registry(self) -> None:
+        await self.connect()
+        assert self._connection is not None
+        async with self._connection.transaction():
+            async with self._connection.cursor() as cursor:
+                await cursor.execute("""
+                    insert into embassy_member_registry_state (id, frozen, frozen_at)
+                    values (1, true, now())
+                    on conflict (id) do update set
+                        frozen = true,
+                        frozen_at = coalesce(embassy_member_registry_state.frozen_at, now())
+                """)
+
+    async def fetch_embassy_member_registry_counts(self) -> dict[str, int]:
+        await self.connect()
+        assert self._connection is not None
+        async with self._connection.cursor() as cursor:
+            await cursor.execute("""
+                select
+                    count(*)::int as total,
+                    count(*) filter (where member_type = 'foreign_diplomat')::int as foreign_diplomats,
+                    count(*) filter (where member_type = 'indian_ambassador')::int as indian_ambassadors
+                from embassy_members
+                where active = true
+            """)
+            row = await cursor.fetchone() or {}
+            return {
+                "total": int(row.get("total", 0)),
+                "foreign_diplomats": int(row.get("foreign_diplomats", 0)),
+                "indian_ambassadors": int(row.get("indian_ambassadors", 0)),
+            }
+
     async def upsert_embassy_member(
         self,
         *,
@@ -70,7 +114,7 @@ class Database:
         member_type: str,
         embassy_role_id: str,
     ) -> bool:
-        """Insert/update an embassy assignment. Returns True when inserted."""
+        """Insert/update an embassy assignment before the registry is frozen."""
         await self.connect()
         assert self._connection is not None
         async with self._connection.transaction():
@@ -93,37 +137,6 @@ class Database:
                 ))
                 row = await cursor.fetchone()
                 return bool(row and row["inserted"])
-
-    async def deactivate_missing_embassy_members(
-        self,
-        *,
-        embassy_id: str,
-        embassy_role_id: str,
-        seen_user_ids: set[str],
-    ) -> int:
-        """Deactivate assignments that no longer hold the embassy access role."""
-        await self.connect()
-        assert self._connection is not None
-        async with self._connection.transaction():
-            async with self._connection.cursor() as cursor:
-                if seen_user_ids:
-                    await cursor.execute("""
-                        update embassy_members
-                        set active = false, updated_at = now()
-                        where embassy_id = %s::uuid
-                          and embassy_role_id = %s
-                          and active = true
-                          and not (discord_user_id = any(%s))
-                    """, (embassy_id, embassy_role_id, list(seen_user_ids)))
-                else:
-                    await cursor.execute("""
-                        update embassy_members
-                        set active = false, updated_at = now()
-                        where embassy_id = %s::uuid
-                          and embassy_role_id = %s
-                          and active = true
-                    """, (embassy_id, embassy_role_id))
-                return cursor.rowcount
 
     async def fetch_embassy_members(self, embassy_id: str) -> list[dict[str, Any]]:
         await self.connect()
