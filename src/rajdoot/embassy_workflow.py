@@ -348,6 +348,38 @@ async def process_embassy_choice(database: Database, request_id: str, applicant:
         await store.set_flow_state(request_id, "embassy_selection_failed", request_status="failed")
         return
 
+    await store.set_flow_state(
+        request_id,
+        "awaiting_embassy_approval" if own_country else "awaiting_government_approval",
+        target_country_id=str(embassy.get("country_id") or country_id or ""),
+        target_embassy_id=str(embassy["id"]),
+        government_position=position,
+        government_country_id=country_id,
+        verification_status="verified",
+        request_status="pending_approval",
+    )
+
+    warera_user_id = str(request_profile_id(profile) or "")
+    preapproval = await store.find_preapproval(str(embassy["id"]), warera_user_id) if warera_user_id else None
+    if preapproval:
+        await store.consume_preapproval(str(preapproval["id"]), request_id)
+        await store.set_flow_state(request_id, "approved_preapproval", request_status="approved", government_auto_approved=True, preapproval_id=str(preapproval["id"]))
+        await EmbassyAccessService(database).grant(applicant.guild, applicant, embassy, actor_id=int(preapproval["diplomat_discord_id"]), assignment_type="foreign_diplomat")
+        await store.log_audit(actor=applicant.id, action="PREAPPROVAL_ACCESS_GRANTED", target_type="request", target_id=request_id, embassy_id=str(embassy["id"]), result="APPROVED")
+        if channel:
+            await channel.send("🤝 **Pre-approval matched!** Your access has been granted without another approval step.")
+        await close_thread(channel)
+        return
+
+    if own_country and position in {"President", "Vice President", "Minister of Foreign Affairs"}:
+        await store.set_flow_state(request_id, "approved_government_official", request_status="approved", government_auto_approved=True)
+        await EmbassyAccessService(database).grant(applicant.guild, applicant, embassy, actor_id=None, assignment_type="foreign_diplomat")
+        await store.log_audit(actor=applicant.id, action="GOVERNMENT_OFFICIAL_AUTO_APPROVED", target_type="request", target_id=request_id, embassy_id=str(embassy["id"]), result="APPROVED", metadata={"position": position})
+        if channel:
+            await channel.send(f"🟢 **Auto-approved.** Your verified **{position}** status grants immediate access to your own country's embassy.")
+        await close_thread(channel)
+        return
+
     if own_country:
         diplomats = await store.active_embassy_members(str(embassy["id"]))
         if not diplomats:
@@ -383,37 +415,6 @@ async def process_embassy_choice(database: Database, request_id: str, applicant:
             await close_thread(channel)
             return
 
-    await store.set_flow_state(
-        request_id,
-        "awaiting_embassy_approval" if own_country else "awaiting_government_approval",
-        target_country_id=str(embassy.get("country_id") or country_id or ""),
-        target_embassy_id=str(embassy["id"]),
-        government_position=position,
-        government_country_id=country_id,
-        verification_status="verified",
-        request_status="pending_approval",
-    )
-
-    warera_user_id = str(request_profile_id(profile) or "")
-    preapproval = await store.find_preapproval(str(embassy["id"]), warera_user_id) if warera_user_id else None
-    if preapproval:
-        await store.consume_preapproval(str(preapproval["id"]), request_id)
-        await store.set_flow_state(request_id, "approved_preapproval", request_status="approved", government_auto_approved=True, preapproval_id=str(preapproval["id"]))
-        await EmbassyAccessService(database).grant(applicant.guild, applicant, embassy, actor_id=int(preapproval["diplomat_discord_id"]), assignment_type="foreign_diplomat")
-        await store.log_audit(actor=applicant.id, action="PREAPPROVAL_ACCESS_GRANTED", target_type="request", target_id=request_id, embassy_id=str(embassy["id"]), result="APPROVED")
-        if channel:
-            await channel.send("🤝 **Pre-approval matched!** Your access has been granted without another approval step.")
-        await close_thread(channel)
-        return
-
-    if own_country and position in {"President", "Vice President", "Minister of Foreign Affairs"}:
-        await store.set_flow_state(request_id, "approved_government_official", request_status="approved", government_auto_approved=True)
-        await EmbassyAccessService(database).grant(applicant.guild, applicant, embassy, actor_id=None, assignment_type="foreign_diplomat")
-        await store.log_audit(actor=applicant.id, action="GOVERNMENT_OFFICIAL_AUTO_APPROVED", target_type="request", target_id=request_id, embassy_id=str(embassy["id"]), result="APPROVED", metadata={"position": position})
-        if channel:
-            await channel.send(f"🟢 **Auto-approved.** Your verified **{position}** status grants immediate access to your own country's embassy.")
-        await close_thread(channel)
-        return
 
     await send_approval_card(database, request_id, applicant, profile, embassy, own_country=own_country)
     if channel:
