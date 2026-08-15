@@ -90,7 +90,7 @@ class RajdootBot(discord.Client):
             if not isinstance(interaction.user, discord.Member) or not (
                 interaction.user.guild_permissions.manage_guild or interaction.user.guild_permissions.administrator
             ):
-                await interaction.response.send_message("🔐 Only authorized server managers can import embassy assignments.", ephemeral=True)
+                await interaction.response.send_message("🔐 Only authorized server managers can freeze embassy assignments.", ephemeral=True)
                 return
             if interaction.guild is None:
                 await interaction.response.send_message("🌿 This command must be used inside the embassy server.", ephemeral=True)
@@ -110,16 +110,15 @@ class RajdootBot(discord.Client):
                 return
 
             await interaction.followup.send(
-                "🪪 **Embassy Member Registry Imported**\n\n"
+                "🪪 **Embassy Member Registry Frozen**\n\n"
                 f"🏛️ Embassies scanned: **{result.embassies_scanned}**\n"
                 f"🎟️ Embassy access roles found: **{result.access_roles_found}**\n"
-                f"👥 Assignments seen: **{result.assignments_seen}**\n"
-                f"🌍 Foreign Diplomats added: **{result.foreign_diplomats}**\n"
-                f"🇮🇳 Indian Ambassadors added: **{result.indian_ambassadors}**\n"
-                f"♻️ Existing assignments refreshed: **{result.unchanged}**\n"
-                f"🚪 Assignments no longer holding the access role: **{result.deactivated}**\n"
+                f"👥 Assignments captured: **{result.assignments_seen}**\n"
+                f"🌍 Foreign Diplomats captured: **{result.foreign_diplomats}**\n"
+                f"🇮🇳 Indian Ambassadors captured: **{result.indian_ambassadors}**\n"
+                f"♻️ Existing assignments already stored: **{result.unchanged}**\n"
                 f"⚠️ Embassies without a matched access role: **{result.unmatched_embassies}**\n\n"
-                "Classification is based on the embassy-specific access role plus the Indian Citizen role. The importer only reads Discord memberships and updates the Supabase registry; it does not change Discord roles, permissions, channels, or memberships.",
+                "Classification is based on the embassy-specific access role plus the Indian Citizen role. The registry is persistent: later removal or deletion of the old embassy access roles will NOT remove these stored assignments. This command only reads Discord memberships and updates Supabase; it does not change Discord roles, permissions, channels, or memberships.",
                 ephemeral=True,
             )
 
@@ -138,7 +137,7 @@ class RajdootBot(discord.Client):
 
         member_import_command = app_commands.Command(
             name="import-embassy-members",
-            description="Import current embassy access-role members into the Supabase registry.",
+            description="Freeze current embassy access-role members into the Supabase registry.",
             callback=import_embassy_members,
         )
         member_import_command.default_permissions = discord.Permissions(manage_guild=True)
