@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     government_dashboard_message_id: int | None = None
     diplomat_dashboard_channel_id: int | None = None
     diplomat_dashboard_message_id: int | None = None
+    indian_citizen_role_id: int | None = None
 
     warera_api_base_url: str = "https://api.warera.io"
     warera_api_token: str | None = None
