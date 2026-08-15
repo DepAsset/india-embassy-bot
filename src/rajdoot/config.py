@@ -1,3 +1,4 @@
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -12,7 +13,16 @@ class Settings(BaseSettings):
     government_dashboard_message_id: int | None = None
     diplomat_dashboard_channel_id: int | None = None
     diplomat_dashboard_message_id: int | None = None
-    indian_citizen_role_id: int | None = None
+
+    # Support the existing Render variable name used by this deployment,
+    # while also accepting the newer descriptive alias.
+    indian_citizen_role_id: int | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "ROLE_INDIAN_CITIZEN_ID",
+            "INDIAN_CITIZEN_ROLE_ID",
+        ),
+    )
 
     warera_api_base_url: str = "https://api.warera.io"
     warera_api_token: str | None = None
