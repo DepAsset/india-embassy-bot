@@ -13,6 +13,7 @@ from rajdoot.embassy_access import EmbassyManagementCommands
 from rajdoot.embassy_members import EmbassyMemberImporter
 from rajdoot.embassy_workflow import EmbassyRequestCommands, PersistentApprovalView
 from rajdoot.fixed_dashboards import FixedDiplomatDashboardView, FixedGovernmentDashboardView
+from rajdoot.top_level_commands import register_top_level_commands
 from rajdoot.ui import HomeView, ensure_dashboard_message
 
 
@@ -45,9 +46,6 @@ class HealthHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def log_message(self, format: str, *args: object) -> None:
-        # Render health probes are expected infrastructure traffic. Keep the
-        # application log focused on bot/database events instead of emitting a
-        # line every five seconds.
         return
 
 
@@ -176,6 +174,7 @@ class RajdootBot(discord.Client):
         self.tree.add_command(member_import_command, guild=guild)
         self.tree.add_command(EmbassyRequestCommands(self.database), guild=guild)
         self.tree.add_command(EmbassyManagementCommands(self.database), guild=guild)
+        register_top_level_commands(self.tree, self.database, guild)
         await self.tree.sync(guild=guild)
         logger.info("Guild dashboard commands synchronized")
         logger.info("Supabase PostgreSQL connection established")
