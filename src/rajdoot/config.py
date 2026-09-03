@@ -8,13 +8,13 @@ class Settings(BaseSettings):
     database_url: str
 
     request_category_id: int | None = Field(default=None, validation_alias=AliasChoices("REQUEST_CATEGORY_ID", "CATEGORY_REQUEST_ID"))
-    request_channel_id: int | None = Field(default=None, validation_alias=AliasChoices("REQUEST_CHANNEL_ID", "CHANNEL_REQUEST_PARENT_ID", "CHANNEL_VERIFICATION_ID"))
+    request_channel_id: int | None = Field(default=None, validation_alias=AliasChoices("REQUEST_CHANNEL_ID", "CHANNEL_REQUEST_PARENT_ID"))
     logs_channel_id: int | None = Field(default=None, validation_alias=AliasChoices("LOGS_CHANNEL_ID", "CHANNEL_SYSTEM_AUDIT_LOGS_ID", "CHANNEL_EMBASSY_REQUEST_LOGS_ID"))
     government_dashboard_channel_id: int | None = None
     government_dashboard_message_id: int | None = None
     diplomat_dashboard_channel_id: int | None = None
     diplomat_dashboard_message_id: int | None = None
-    verification_dashboard_channel_id: int | None = Field(default=None, validation_alias=AliasChoices("VERIFICATION_DASHBOARD_CHANNEL_ID", "CHANNEL_VERIFICATION_ID"))
+    verification_dashboard_channel_id: int | None = Field(default=None, validation_alias=AliasChoices("VERIFICATION_DASHBOARD_CHANNEL_ID", "CHANNEL_VERIFICATION_DASHBOARD_ID"))
     verification_dashboard_message_id: int | None = None
 
     indian_citizen_role_id: int | None = Field(default=None, validation_alias=AliasChoices("ROLE_INDIAN_CITIZEN_ID", "INDIAN_CITIZEN_ROLE_ID"))
