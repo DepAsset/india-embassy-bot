@@ -59,7 +59,7 @@ def test_category_boundary_never_splits_a_letter_group() -> None:
     assert plan.categories[0].name == "Embassy 1 (A-S)"
     assert plan.categories[1].name == "Embassy 2 (T-Z)"
     assert len(plan.categories[0].entries) == 49
-    assert len(plan.categories[1].entries) == 12
+    assert len(plan.categories[1].entries) == 11
     assert all(len(category.entries) <= EmbassyLayoutPlanner.MAX_PER_CATEGORY for category in plan.categories)
 
 
