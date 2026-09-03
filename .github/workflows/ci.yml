@@ -7,6 +7,10 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    env:
+      DISCORD_TOKEN: ci-test-token
+      DISCORD_GUILD_ID: "1"
+      DATABASE_URL: postgresql://ci:ci@localhost/ci
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
