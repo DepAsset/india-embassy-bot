@@ -2,73 +2,46 @@
 
 RAJDOOT is the Embassy access and diplomatic management system for the WarEra Discord community.
 
-## Product principles
+## Architecture
 
-- Discord is the user interface and access projection layer.
-- Supabase PostgreSQL is the source of truth for RAJDOOT state.
-- WarEra is the external identity and profile data source.
-- Dashboard-first UX. We do not turn every feature into a slash command.
-- Every major entity and workflow should be interlinked and navigable.
-- Prefer embeds, buttons, select menus, links, and modals/forms when they make an interaction easier.
-- Long-running work must acknowledge interactions immediately and provide friendly progress feedback.
-- Discord and external API work must be rate-limit-aware, idempotent, and diff-based where possible.
-- Important actions are recorded in the database and surfaced through the dedicated Discord Logs channel.
-- User-facing wording should feel warm, polished, diplomatic, and joyful without becoming childish or noisy.
+- **Supabase PostgreSQL** is the source of truth for embassy, request, assignment, preapproval and audit state.
+- **WarEra** supplies verified player, country, government-position and company data.
+- **Discord** is the interaction and access-projection layer.
+- Dashboards are fixed/persistent; workflows use private threads, buttons, select menus and modals.
 
-## Current build state
+## Embassy Access Request flow
 
-The new Embassy System foundation and first end-to-end access workflow are implemented on the feature branch.
+1. Applicant starts from the fixed Verification & Access Request dashboard.
+2. RAJDOOT refuses a second request while an earlier request is still open. A closed/archived request must finish before another can be created.
+3. Applicant submits a WarEra profile.
+4. RAJDOOT resolves the country ID through `country.getCountryById` when necessary and stores the canonical country name.
+5. RAJDOOT issues a six-character company OTP with five attempts and a 30-minute expiry.
+6. Company verification resolves all company IDs to their names, concurrently and with bounded API timeouts.
+7. After verification the applicant chooses their own-country embassy or another embassy.
+8. Own-country routing:
+   - Existing active embassy + President/VP/MoFA: immediate government-official auto-approval.
+   - Existing/new embassy with **zero active foreign diplomats**: immediate auto-approval.
+   - Existing embassy with one or more active foreign diplomats: approval is sent only to those diplomats.
+9. Other-country routing always goes to EAM/Admin approval.
+10. Pre-approval, when valid and matched to the verified WarEra user, grants access without another approval step.
+11. Approved access is stored durably, projected to Discord permissions, and registered in the embassy member registry.
+12. Completed requests close and lock their private thread.
 
-### Implemented chunks
+## Embassy layout
 
-1. Canonical embassy/member registry and legacy-role reconciliation baseline.
-2. Supabase-backed embassy access requests and durable request state.
-3. WarEra full-profile lookup and company-based OTP verification.
-4. Five-attempt verification guard with 30-minute OTP expiry and audit events.
-5. Own-country vs other-country embassy routing.
-6. Government-official auto-approval for President, Vice President and Minister of Foreign Affairs when requesting their own-country embassy.
-7. Pre-approval records that can be consumed automatically by a matching visitor request.
-8. Automatic embassy creation/revival path when an own-country embassy does not exist.
-9. Persistent embassy approval controls that are re-registered after bot restart.
-10. Ambassador/diplomat assignment lifecycle, direct Discord permissions, welcome messages and revocation.
-11. Top-level diplomacy commands: `/assignambassador`, `/dismissambassador`, `/removediplomat`, `/listembassies`, `/listdiplomats`, `/diplomatprofile`.
-12. Automated Ruff + pytest CI gate.
+Every newly created/revived embassy triggers a full deterministic layout reconciliation. Active embassies are sorted alphabetically by country name, letter groups stay together, categories are numbered deterministically, and embassy channels are renamed/reordered to their canonical country slugs. No unrelated channels or legacy access roles are displaced.
 
-## Database
+## Restart guarantees
 
-The migration chain is in `supabase/migrations/`.
+- Fixed dashboards are singleton messages: RAJDOOT reuses the canonical message, repairs stale IDs and removes nearby duplicate RAJDOOT copies.
+- Dashboard reconciliation is serialized so simultaneous `on_ready` events cannot create duplicates.
+- Pending request buttons are re-registered after restart for profile submission, company verification, embassy selection and approval.
+- Company verification can continue after restart using the stored OTP hash; the plaintext OTP is not required for verification.
 
-Apply migrations in order in the Supabase SQL Editor before running the application layer.
+## Database migrations
 
-Important workflow migrations include:
+Apply every file in `supabase/migrations/` in order. The migration chain contains the canonical embassy registry, durable request workflow, dashboard configuration, member registry and race-safe request guard.
 
-- `20260815_embassy_members.sql`
-- `20260815_embassy_request_flow.sql`
-- `20260815_embassy_flow_v2.sql`
-- `20260815_embassy_request_guard.sql`
+## Validation
 
-## Planned application layers
-
-```text
-Discord UI
-    |
-    v
-Interaction and navigation layer
-    |
-    v
-Domain services
-    |
-    +---- Supabase PostgreSQL  <-- source of truth
-    |
-    +---- WarEra integration   <-- identity/profile/company data
-    |
-    +---- Discord projection   <-- roles, permissions, channels
-```
-
-## Next build chunks
-
-- Visitor access / embassy visit workflow.
-- Government Control Center request queue and statistics.
-- Diplomat profile dashboard and embassy member management UI.
-- Logs/audit dashboard with filtering and request timeline.
-- Reconciliation and production hardening.
+CI runs Python compilation, Ruff and pytest. The repository includes deterministic tests for embassy layout rules, country parsing, government-position detection and OTP generation.

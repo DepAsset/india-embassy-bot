@@ -8,21 +8,34 @@ from psycopg.types.json import Jsonb
 
 
 class Database:
+    """Small async PostgreSQL gateway.
+
+    The bot deliberately uses one connection because the deployment is a single
+    worker. It is configured with autocommit so read-only cursors never leave a
+    transaction open and block the next interaction. Explicit transaction blocks
+    are used only for multi-statement writes.
+    """
+
     def __init__(self, dsn: str) -> None:
         self._dsn = dsn
         self._connection: AsyncConnection[Any] | None = None
 
     async def connect(self) -> None:
         if self._connection is None or self._connection.closed:
-            self._connection = await AsyncConnection.connect(self._dsn, row_factory=dict_row)
+            self._connection = await AsyncConnection.connect(
+                self._dsn,
+                row_factory=dict_row,
+                autocommit=True,
+                connect_timeout=10,
+                options="-c statement_timeout=10000 -c lock_timeout=3000",
+            )
 
     async def close(self) -> None:
         if self._connection is not None and not self._connection.closed:
             await self._connection.close()
 
     async def ping(self) -> None:
-        await self.connect()
-        assert self._connection is not None
+        await self.connect(); assert self._connection is not None
         async with self._connection.cursor() as cursor:
             await cursor.execute("select 1")
             await cursor.fetchone()
@@ -38,6 +51,40 @@ class Database:
         async with self._connection.cursor() as cursor:
             await cursor.execute("select id, country_id, country_name, channel_id, channel_name, category_id, status, display_order from embassies order by status, display_order nulls last, country_name asc")
             return list(await cursor.fetchall())
+
+    async def create_embassy(self, *, country_id: str, country_name: str, channel_id: int, channel_name: str, category_id: int) -> dict[str, Any]:
+        await self.connect(); assert self._connection is not None
+        async with self._connection.transaction():
+            async with self._connection.cursor() as cursor:
+                await cursor.execute(
+                    """
+                    insert into embassies (country_id, country_name, channel_id, channel_name, category_id, status)
+                    values (%s, %s, %s, %s, %s, 'active')
+                    on conflict do nothing
+                    returning id, country_id, country_name, channel_id, channel_name, category_id, status, display_order
+                    """,
+                    (country_id, country_name, channel_id, channel_name, category_id),
+                )
+                row = await cursor.fetchone()
+                if row:
+                    return dict(row)
+        existing = await self.fetch_active_embassy_by_country(country_id, country_name)
+        if existing:
+            return existing
+        raise RuntimeError("Embassy record creation failed")
+
+    async def fetch_active_embassy_by_country(self, country_id: str | None, country_name: str | None) -> dict[str, Any] | None:
+        await self.connect(); assert self._connection is not None
+        async with self._connection.cursor() as cursor:
+            if country_id:
+                await cursor.execute("select id, country_id, country_name, channel_id, channel_name, category_id, status, display_order from embassies where status = 'active' and country_id = %s limit 1", (country_id,))
+                row = await cursor.fetchone()
+                if row:
+                    return row
+            if country_name:
+                await cursor.execute("select id, country_id, country_name, channel_id, channel_name, category_id, status, display_order from embassies where status = 'active' and lower(country_name) = lower(%s) limit 1", (country_name,))
+                return await cursor.fetchone()
+            return None
 
     async def fetch_legacy_roles(self) -> list[dict[str, Any]]:
         await self.connect(); assert self._connection is not None
@@ -90,8 +137,7 @@ class Database:
         async with self._connection.cursor() as cursor:
             await cursor.execute("""
                 select r.*, e.country_name, e.channel_id, e.channel_name
-                from embassy_requests r
-                join embassies e on e.id = r.target_embassy_id
+                from embassy_requests r join embassies e on e.id = r.target_embassy_id
                 where r.request_status = 'pending_approval'
                   and r.flow_stage = 'awaiting_government_approval'
                   and e.status = 'active'
@@ -103,12 +149,11 @@ class Database:
         await self.connect(); assert self._connection is not None
         async with self._connection.cursor() as cursor:
             await cursor.execute("""
-                select
-                    count(*)::int as total,
-                    count(*) filter (where request_status = 'pending_approval')::int as pending,
-                    count(*) filter (where request_status = 'approved')::int as approved,
-                    count(*) filter (where request_status = 'rejected')::int as rejected,
-                    count(*) filter (where verification_status = 'verified')::int as verified
+                select count(*)::int as total,
+                       count(*) filter (where request_status = 'pending_approval')::int as pending,
+                       count(*) filter (where request_status = 'approved')::int as approved,
+                       count(*) filter (where request_status = 'rejected')::int as rejected,
+                       count(*) filter (where verification_status = 'verified')::int as verified
                 from embassy_requests
             """)
             row = await cursor.fetchone() or {}
@@ -196,9 +241,21 @@ class Database:
                 from embassy_requests r join embassies e on e.id = r.target_embassy_id
                 where r.request_status = 'pending_approval' and e.status = 'active'
                   and r.flow_stage = 'awaiting_embassy_approval'
-                  and exists (select 1 from embassy_members em where em.embassy_id = r.target_embassy_id and em.discord_user_id = %s and em.active = true)
+                  and exists (select 1 from embassy_members em where em.embassy_id = r.target_embassy_id and em.discord_user_id = %s and em.active = true and em.member_type = 'foreign_diplomat')
                 order by r.created_at asc
             """, (discord_user_id,))
+            return list(await cursor.fetchall())
+
+    async def fetch_active_embassy_diplomats(self, embassy_id: str) -> list[dict[str, Any]]:
+        await self.connect(); assert self._connection is not None
+        async with self._connection.cursor() as cursor:
+            await cursor.execute("""
+                select distinct a.user_discord_id, e.country_name, a.assignment_type
+                from embassy_assignments a join embassies e on e.id = a.embassy_id
+                where a.embassy_id = %s::uuid and a.status = 'active'
+                  and a.assignment_type = 'foreign_diplomat' and e.status = 'active'
+                order by a.user_discord_id
+            """, (embassy_id,))
             return list(await cursor.fetchall())
 
     async def decide_embassy_request(self, *, request_id: str, actor_discord_id: int, decision: str, assignment_type: str | None = None, reason: str | None = None) -> dict[str, Any]:
@@ -211,8 +268,8 @@ class Database:
                 if request is None: raise LookupError("Embassy request not found")
                 if request["request_status"] != "pending_approval": raise ValueError("Embassy request is no longer awaiting approval")
                 if request["flow_stage"] == "awaiting_embassy_approval":
-                    await cursor.execute("select 1 from embassy_members where embassy_id = %s::uuid and discord_user_id = %s and active = true limit 1", (request["target_embassy_id"], actor_discord_id))
-                    if await cursor.fetchone() is None: raise PermissionError("Actor is not an active member of this embassy")
+                    await cursor.execute("select 1 from embassy_assignments where embassy_id = %s::uuid and user_discord_id = %s and assignment_type = 'foreign_diplomat' and status = 'active' limit 1", (request["target_embassy_id"], actor_discord_id))
+                    if await cursor.fetchone() is None: raise PermissionError("Actor is not an active diplomat in this embassy")
                 if decision == "approved":
                     if assignment_type not in {"foreign_diplomat", "indian_ambassador"}: raise ValueError("assignment_type is required for approval")
                     await cursor.execute("insert into embassy_assignments (user_discord_id, embassy_id, assignment_type, status, granted_by_discord_id) values (%s, %s::uuid, %s, 'active', %s) on conflict (user_discord_id, embassy_id) where status = 'active' do update set assignment_type = excluded.assignment_type, granted_by_discord_id = excluded.granted_by_discord_id, granted_at = now(), updated_at = now()", (request["applicant_discord_id"], request["target_embassy_id"], assignment_type, actor_discord_id))
