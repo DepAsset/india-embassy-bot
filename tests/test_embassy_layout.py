@@ -28,9 +28,10 @@ def test_planner_keeps_letter_groups_together() -> None:
     assert second.name == "Embassy 2 (C-Z)"
     assert first.entries[-1].country_name.startswith("B")
     assert second.entries[0].country_name.startswith("C")
+    assert all(len(category.entries) <= EmbassyLayoutPlanner.MAX_PER_CATEGORY for category in plan.categories)
 
 
-def test_final_category_uses_z_as_its_upper_boundary() -> None:
+def test_category_boundary_never_splits_a_letter_group() -> None:
     names = [
         "Afghanistan", "Albania", "Algeria", "Argentina", "Australia", "Austria",
         "Belgium", "Brazil", "Canada", "Chile", "China", "Denmark", "Egypt",
@@ -55,8 +56,21 @@ def test_final_category_uses_z_as_its_upper_boundary() -> None:
     plan = EmbassyLayoutPlanner.plan(embassies)
 
     assert len(plan.categories) == 2
-    assert plan.categories[0].name == "Embassy 1 (A-T)"
-    assert plan.categories[1].name == "Embassy 2 (U-Z)"
+    assert plan.categories[0].name == "Embassy 1 (A-S)"
+    assert plan.categories[1].name == "Embassy 2 (T-Z)"
+    assert len(plan.categories[0].entries) == 49
+    assert len(plan.categories[1].entries) == 12
+    assert all(len(category.entries) <= EmbassyLayoutPlanner.MAX_PER_CATEGORY for category in plan.categories)
+
+
+def test_final_category_uses_z_as_its_upper_boundary() -> None:
+    plan = EmbassyLayoutPlanner.plan(
+        [
+            {"id": "1", "country_name": "India", "channel_id": 1, "status": "active"},
+            {"id": "2", "country_name": "Yemen", "channel_id": 2, "status": "active"},
+        ]
+    )
+    assert plan.categories[-1].name == "Embassy 1 (I-Z)"
 
 
 def test_planner_ignores_archived_embassies() -> None:
