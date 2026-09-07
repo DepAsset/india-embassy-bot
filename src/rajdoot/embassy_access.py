@@ -13,15 +13,8 @@ from rajdoot.workflow_store import WorkflowStore
 
 
 EMBASSY_PERMISSIONS = (
-    "view_channel",
-    "send_messages",
-    "read_message_history",
-    "send_messages_in_threads",
-    "create_public_threads",
-    "create_private_threads",
-    "add_reactions",
-    "embed_links",
-    "attach_files",
+    "view_channel", "send_messages", "read_message_history", "send_messages_in_threads",
+    "create_public_threads", "create_private_threads", "add_reactions", "embed_links", "attach_files",
 )
 
 WELCOME_MESSAGES = (
@@ -68,50 +61,19 @@ class EmbassyAccessService:
         self.database = database
         self.store = WorkflowStore(database)
 
-    async def grant(
-        self,
-        guild: discord.Guild,
-        member: discord.Member,
-        embassy: dict,
-        *,
-        actor_id: int | None,
-        assignment_type: str = "foreign_diplomat",
-    ) -> None:
+    async def grant(self, guild: discord.Guild, member: discord.Member, embassy: dict, *, actor_id: int | None, assignment_type: str = "foreign_diplomat") -> None:
         channel_id = embassy.get("channel_id")
         if not channel_id:
             raise RuntimeError("Embassy has no Discord channel")
         channel = guild.get_channel(int(channel_id))
         if not isinstance(channel, discord.TextChannel):
             raise RuntimeError("Embassy Discord channel is unavailable")
-
-        await self.store.upsert_assignment(
-            user_discord_id=member.id,
-            embassy_id=str(embassy["id"]),
-            assignment_type=assignment_type,
-            granted_by=actor_id,
-        )
-        await channel.set_permissions(
-            member,
-            overwrite=apply_embassy_permissions(channel, member),
-            reason="RAJDOOT embassy access grant",
-        )
-
-        if assignment_type == "indian_ambassador":
-            role = _role(member, settings.ambassador_role_id, ("Ambassador",))
-        else:
-            role = _role(member, settings.foreign_diplomat_role_id, ("Foreign Diplomat",))
+        await self.store.upsert_assignment(user_discord_id=member.id, embassy_id=str(embassy["id"]), assignment_type=assignment_type, granted_by=actor_id)
+        await channel.set_permissions(member, overwrite=apply_embassy_permissions(channel, member), reason="RAJDOOT embassy access grant")
+        role = _role(member, settings.ambassador_role_id, ("Ambassador",)) if assignment_type == "indian_ambassador" else _role(member, settings.foreign_diplomat_role_id, ("Foreign Diplomat",))
         if role and role not in member.roles:
             await member.add_roles(role, reason="RAJDOOT embassy access grant")
-
-        await self.store.log_audit(
-            actor=actor_id,
-            action="EMBASSY_ACCESS_GRANTED",
-            target_type="user",
-            target_id=str(member.id),
-            embassy_id=str(embassy["id"]),
-            result="SUCCESS",
-            metadata={"assignment_type": assignment_type},
-        )
+        await self.store.log_audit(actor=actor_id, action="EMBASSY_ACCESS_GRANTED", target_type="user", target_id=str(member.id), embassy_id=str(embassy["id"]), result="SUCCESS", metadata={"assignment_type": assignment_type})
         await self._welcome(channel, member, embassy)
 
     async def revoke(self, guild: discord.Guild, member: discord.Member, embassy: dict, *, actor_id: int) -> bool:
@@ -125,7 +87,6 @@ class EmbassyAccessService:
                 await channel.set_permissions(member, overwrite=None, reason="RAJDOOT embassy access revoked")
             except (discord.Forbidden, discord.NotFound, discord.HTTPException):
                 pass
-
         assignments = await self.store.active_assignments_for_user(member.id)
         if not any(a.get("assignment_type") == "foreign_diplomat" for a in assignments):
             role = _role(member, settings.foreign_diplomat_role_id, ("Foreign Diplomat",))
@@ -134,26 +95,14 @@ class EmbassyAccessService:
                     await member.remove_roles(role, reason="RAJDOOT no active foreign diplomat assignments remain")
                 except (discord.Forbidden, discord.HTTPException):
                     pass
-
-        await self.store.log_audit(
-            actor=actor_id,
-            action="EMBASSY_ACCESS_REVOKED",
-            target_type="user",
-            target_id=str(member.id),
-            embassy_id=str(embassy["id"]),
-            result="SUCCESS",
-        )
+        await self.store.log_audit(actor=actor_id, action="EMBASSY_ACCESS_REVOKED", target_type="user", target_id=str(member.id), embassy_id=str(embassy["id"]), result="SUCCESS")
         return True
 
     async def _welcome(self, channel: discord.TextChannel, member: discord.Member, embassy: dict) -> None:
         embassy_value = embassy["id"]
         seed = getattr(embassy_value, "int", 0)
         index = (member.id + int(seed)) % len(WELCOME_MESSAGES)
-        message = await channel.send(
-            f"{member.mention}\n{WELCOME_MESSAGES[index]}\n\n"
-            f"🏛️ **{embassy.get('country_name', 'Embassy')} Embassy** access has been granted.",
-            allowed_mentions=discord.AllowedMentions(users=[member]),
-        )
+        message = await channel.send(f"{member.mention}\n{WELCOME_MESSAGES[index]}\n\n🏛️ **{embassy.get('country_name', 'Embassy')} Embassy** access has been granted.", allowed_mentions=discord.AllowedMentions(users=[member]))
         try:
             await message.add_reaction("🎉")
         except discord.HTTPException:
@@ -163,39 +112,35 @@ class EmbassyAccessService:
 class EmbassySelectView(discord.ui.View):
     def __init__(self, database: Database, *, member: discord.Member, action: str) -> None:
         super().__init__(timeout=300)
-        self.database = database
-        self.member = member
-        self.action = action
+        self.database, self.member, self.action = database, member, action
         self.store = WorkflowStore(database)
-        self.select = discord.ui.Select(
-            placeholder="Select one or more embassies",
-            min_values=1,
-            max_values=25,
-            options=[],
-        )
+        self.select = discord.ui.Select(placeholder="Select one or more embassies", min_values=1, max_values=25, options=[])
         self.select.callback = self._select_callback
         self.add_item(self.select)
 
     async def populate(self) -> None:
         embassies = await self.database.fetch_active_embassies()
-        self.select.options = [
-            discord.SelectOption(
-                label=str(e["country_name"])[:100],
-                value=str(e["id"]),
-                description=f"#{e.get('channel_name') or 'embassy channel'}"[:100],
-            )
-            for e in embassies[:25]
-        ]
+        self.select.options = [discord.SelectOption(label=str(e["country_name"])[:100], value=str(e["id"]), description=f"#{e.get('channel_name') or 'embassy channel'}"[:100]) for e in embassies[:25]]
 
     async def _select_callback(self, interaction: discord.Interaction) -> None:
-        if not isinstance(interaction.user, discord.Member) or interaction.user.id != self.member.id:
-            await interaction.response.send_message("This menu belongs to another diplomat action.", ephemeral=True)
+        if not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message("This action is only available inside the embassy server.", ephemeral=True)
             return
+        if self.action == "assign" and not is_government(interaction.user):
+            await interaction.response.send_message("🔐 Only Admin/EAM can assign ambassadors.", ephemeral=True)
+            return
+        selected = [str(value) for value in self.select.values]
+        if self.action == "revoke" and not is_government(interaction.user):
+            allowed = {str(a["embassy_id"]) for a in await self.store.active_assignments_for_user(interaction.user.id)}
+            if not allowed.intersection(selected):
+                await interaction.response.send_message("🔐 You can only revoke access in embassies you manage.", ephemeral=True)
+                return
+            selected = [value for value in selected if value in allowed]
         await interaction.response.send_message("🔄 Applying embassy access changes…", ephemeral=True)
         embassies = {str(e["id"]): e for e in await self.database.fetch_active_embassies()}
         service = EmbassyAccessService(self.database)
         changed = 0
-        for embassy_id in self.select.values:
+        for embassy_id in selected:
             embassy = embassies.get(embassy_id)
             if not embassy:
                 continue
@@ -203,13 +148,7 @@ class EmbassySelectView(discord.ui.View):
                 if not has_ambassador_role(self.member):
                     await interaction.edit_original_response(content="❌ The selected user no longer has the Ambassador role.")
                     return
-                await service.grant(
-                    interaction.guild,
-                    self.member,
-                    embassy,
-                    actor_id=interaction.user.id,
-                    assignment_type="indian_ambassador",
-                )
+                await service.grant(interaction.guild, self.member, embassy, actor_id=interaction.user.id, assignment_type="indian_ambassador")
                 changed += 1
             elif await service.revoke(interaction.guild, self.member, embassy, actor_id=interaction.user.id):
                 changed += 1
@@ -234,43 +173,31 @@ class EmbassyManagementCommands(app_commands.Group):
     @app_commands.describe(embassy="Embassy UUID", profile="WarEra profile URL", hours="Optional expiry in hours", reason="Optional reason")
     async def preapproval(self, interaction: discord.Interaction, embassy: str, profile: str, hours: int = 72, reason: str | None = None) -> None:
         if not isinstance(interaction.user, discord.Member) or interaction.guild is None:
-            await interaction.response.send_message("This command must be used in the embassy server.", ephemeral=True)
-            return
+            await interaction.response.send_message("This command must be used in the embassy server.", ephemeral=True); return
         embassy_row = await self.database.fetch_embassy(embassy)
         if not embassy_row or embassy_row.get("status") != "active":
-            await interaction.response.send_message("❌ That embassy is not active.", ephemeral=True)
-            return
+            await interaction.response.send_message("❌ That embassy is not active.", ephemeral=True); return
         if not await self._authorized_for_embassy(interaction.user, embassy):
-            await interaction.response.send_message("🔐 You can only pre-approve visitors for embassies you manage.", ephemeral=True)
-            return
+            await interaction.response.send_message("🔐 You can only pre-approve visitors for embassies you manage.", ephemeral=True); return
         match = re.search(r"/user/([A-Za-z0-9_-]+)", profile.strip())
         if not match:
-            await interaction.response.send_message("❌ Please provide a valid WarEra profile URL.", ephemeral=True)
-            return
+            await interaction.response.send_message("❌ Please provide a valid WarEra profile URL.", ephemeral=True); return
         if hours < 1 or hours > 720:
-            await interaction.response.send_message("❌ Expiry must be between 1 and 720 hours.", ephemeral=True)
-            return
+            await interaction.response.send_message("❌ Expiry must be between 1 and 720 hours.", ephemeral=True); return
         expires_at = datetime.now(timezone.utc) + timedelta(hours=hours)
-        row = await self.store.create_preapproval(
-            embassy_id=embassy,
-            diplomat_discord_id=interaction.user.id,
-            visitor_warera_id=match.group(1),
-            visitor_profile_url=profile.strip(),
-            expires_at=expires_at,
-            reason=reason,
-        )
+        row = await self.store.create_preapproval(embassy_id=embassy, diplomat_discord_id=interaction.user.id, visitor_warera_id=match.group(1), visitor_profile_url=profile.strip(), expires_at=expires_at, reason=reason)
         await self.store.log_audit(actor=interaction.user.id, action="PREAPPROVAL_CREATED", target_type="preapproval", target_id=str(row["id"]), embassy_id=embassy, result="SUCCESS", metadata={"visitor_warera_id": match.group(1), "expires_at": expires_at.isoformat()})
         await interaction.response.send_message(f"🤝 Pre-approval created for WarEra user `{match.group(1)}`.\nExpires: <t:{int(expires_at.timestamp())}:R>", ephemeral=True)
 
     @app_commands.command(name="removediplomat", description="Revoke one user's access to selected embassies")
     @app_commands.describe(user="Diplomat whose embassy access should be revoked")
     async def removediplomat(self, interaction: discord.Interaction, user: discord.Member) -> None:
-        if not isinstance(interaction.user, discord.Member) or not is_government(interaction.user):
-            assignments = await self.store.active_assignments_for_user(interaction.user.id) if isinstance(interaction.user, discord.Member) else []
-            allowed = {str(a["embassy_id"]) for a in assignments}
+        if not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message("This command must be used in the embassy server.", ephemeral=True); return
+        if not is_government(interaction.user):
+            allowed = await self.store.active_assignments_for_user(interaction.user.id)
             if not allowed:
-                await interaction.response.send_message("🔐 You do not manage any embassies.", ephemeral=True)
-                return
+                await interaction.response.send_message("🔐 You do not manage any embassies.", ephemeral=True); return
         view = EmbassySelectView(self.database, member=user, action="revoke")
         await view.populate()
         await interaction.response.send_message("🧹 Select the embassy access to revoke:", view=view, ephemeral=True)
@@ -278,19 +205,15 @@ class EmbassyManagementCommands(app_commands.Group):
     @app_commands.command(name="listembassies", description="List active embassies alphabetically")
     async def listembassies(self, interaction: discord.Interaction) -> None:
         if isinstance(interaction.user, discord.Member) and has_foreign_diplomat_role(interaction.user):
-            await interaction.response.send_message("🔐 Foreign Diplomats cannot use this command.", ephemeral=True)
-            return
+            await interaction.response.send_message("🔐 Foreign Diplomats cannot use this command.", ephemeral=True); return
         embassies = await self.database.fetch_active_embassies()
-        lines = [f"**{i}. {e['country_name']}**" for i, e in enumerate(embassies, start=1)]
-        if not lines:
-            lines = ["No active embassies are registered."]
+        lines = [f"**{i}. {e['country_name']}**" for i, e in enumerate(embassies, start=1)] or ["No active embassies are registered."]
         await interaction.response.send_message(embed=discord.Embed(title="🏛️ Embassy Directory", description="\n".join(lines[:50]), colour=discord.Colour.blurple()), ephemeral=True)
 
     @app_commands.command(name="listdiplomats", description="List active diplomats by embassy")
     async def listdiplomats(self, interaction: discord.Interaction) -> None:
         if not isinstance(interaction.user, discord.Member) or not is_government(interaction.user):
-            await interaction.response.send_message("🔐 Only Admin/EAM can use this command.", ephemeral=True)
-            return
+            await interaction.response.send_message("🔐 Only Admin/EAM can use this command.", ephemeral=True); return
         embassies = await self.database.fetch_active_embassies()
         chunks: list[str] = []
         for embassy in embassies:
@@ -304,8 +227,7 @@ class EmbassyManagementCommands(app_commands.Group):
         if not isinstance(interaction.user, discord.Member) or not is_government(interaction.user):
             allowed = await self.store.active_assignments_for_user(interaction.user.id) if isinstance(interaction.user, discord.Member) else []
             if not any(a["user_discord_id"] == user.id for a in allowed):
-                await interaction.response.send_message("🔐 You cannot inspect that diplomat's profile.", ephemeral=True)
-                return
+                await interaction.response.send_message("🔐 You cannot inspect that diplomat's profile.", ephemeral=True); return
         assignments = await self.store.active_assignments_for_user(user.id)
         embed = discord.Embed(title="👤 Diplomatic Profile", colour=discord.Colour.blurple())
         embed.add_field(name="Discord", value=f"{user.mention} (`{user.id}`)", inline=False)
@@ -316,11 +238,9 @@ class EmbassyManagementCommands(app_commands.Group):
     @app_commands.command(name="assignambassador", description="Assign an Ambassador to one or more embassies")
     async def assignambassador(self, interaction: discord.Interaction, user: discord.Member) -> None:
         if not isinstance(interaction.user, discord.Member) or not is_government(interaction.user):
-            await interaction.response.send_message("🔐 Only Admin/EAM can assign ambassadors.", ephemeral=True)
-            return
+            await interaction.response.send_message("🔐 Only Admin/EAM can assign ambassadors.", ephemeral=True); return
         if not has_ambassador_role(user):
-            await interaction.response.send_message("❌ The selected user does not have the Ambassador role.", ephemeral=True)
-            return
+            await interaction.response.send_message("❌ The selected user does not have the Ambassador role.", ephemeral=True); return
         view = EmbassySelectView(self.database, member=user, action="assign")
         await view.populate()
         await interaction.response.send_message("🏛️ Select the embassies to assign:", view=view, ephemeral=True)
@@ -328,8 +248,7 @@ class EmbassyManagementCommands(app_commands.Group):
     @app_commands.command(name="dismissambassador", description="Revoke an Ambassador's access to one or more embassies")
     async def dismissambassador(self, interaction: discord.Interaction, user: discord.Member) -> None:
         if not isinstance(interaction.user, discord.Member) or not is_government(interaction.user):
-            await interaction.response.send_message("🔐 Only Admin/EAM can dismiss ambassadors.", ephemeral=True)
-            return
+            await interaction.response.send_message("🔐 Only Admin/EAM can dismiss ambassadors.", ephemeral=True); return
         view = EmbassySelectView(self.database, member=user, action="revoke")
         await view.populate()
         await interaction.response.send_message("🧹 Select the embassy access to revoke:", view=view, ephemeral=True)

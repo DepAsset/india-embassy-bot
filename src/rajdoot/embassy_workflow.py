@@ -56,7 +56,14 @@ def country(profile: dict[str, Any]) -> tuple[str | None, str | None]:
         name = value.get("name") or value.get("countryName")
         return (str(cid) if cid else None, str(name) if name else None)
     cid = nested(profile, "countryId", "infos.countryId", "citizenshipId")
-    return (str(cid) if cid else None, str(value) if value else None)
+    if cid:
+        return str(cid), None
+    if isinstance(value, str) and value.strip():
+        text = value.strip()
+        if re.fullmatch(r"[A-Fa-f0-9]{24}", text):
+            return text, None
+        return None, text
+    return None, None
 
 
 def profile_embed(profile: dict[str, Any], title: str = "WarEra Verification Complete") -> discord.Embed:
@@ -631,6 +638,8 @@ class EmbassyRequestCommands(app_commands.Group):
             await interaction.response.send_message("⚠️ REQUEST_CHANNEL_ID is not configured to a text channel.", ephemeral=True)
             return
         await interaction.response.defer(ephemeral=True)
+        request = None
+        thread = None
         try:
             request = await self.store.create_request(interaction.user.id)
             thread = await parent.create_thread(name=f"embassy-request-{interaction.user.display_name}"[:100], type=discord.ChannelType.private_thread, invitable=False, auto_archive_duration=10080, reason="RAJDOOT Embassy Access Request")
@@ -641,6 +650,16 @@ class EmbassyRequestCommands(app_commands.Group):
             await interaction.followup.send(f"✅ Your private embassy request thread is ready: {thread.mention}", ephemeral=True)
         except Exception:
             logger.exception("Could not create embassy request for user %s", interaction.user.id)
+            if request is not None:
+                try:
+                    await self.store.cancel_request(str(request["id"]), reason="Discord request thread creation failed")
+                except Exception:
+                    logger.exception("Could not cancel orphaned request %s", request.get("id"))
+            if thread is not None:
+                try:
+                    await thread.delete(reason="RAJDOOT request setup failed")
+                except (discord.Forbidden, discord.NotFound, discord.HTTPException):
+                    pass
             await interaction.followup.send("⚠️ RAJDOOT could not create the private request. Please try again.", ephemeral=True)
 
     @app_commands.command(name="status", description="Show your current Embassy Access Request status")
