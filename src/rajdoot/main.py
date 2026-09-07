@@ -23,7 +23,9 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         if self.path not in ("/", "/health", "/healthz"):
-            self.send_response(404); self.end_headers(); return
+            self.send_response(404)
+            self.end_headers()
+            return
         body = b"ok\n"
         self.send_response(200)
         self.send_header("Content-Type", "text/plain; charset=utf-8")
@@ -57,55 +59,71 @@ class RajdootBot(discord.Client):
         self.database = database
         self.tree = app_commands.CommandTree(self)
         self._dashboard_lock = asyncio.Lock()
+        self._dashboard_ready_guilds: set[int] = set()
+        self._pending_views_registered = False
 
     async def _register_pending_workflow_views(self) -> None:
+        if self._pending_views_registered:
+            return
         connection = self.database._connection
         if connection is None:
             return
-        async with connection.cursor() as cursor:
-            await cursor.execute(
-                """
-                select id, applicant_discord_id, flow_stage, request_thread_id, warera_user_id,
-                       profile_url, warera_profile_snapshot, otp_expires_at, approval_message_id,
-                       target_embassy_id
-                from embassy_requests
-                where request_status in ('created', 'verifying', 'pending_approval')
-                  and request_thread_id is not null
-                order by created_at asc
-                """
-            )
-            rows = await cursor.fetchall()
+        try:
+            async with connection.cursor() as cursor:
+                await cursor.execute(
+                    """
+                    select id, applicant_discord_id, flow_stage, request_thread_id, warera_user_id,
+                           profile_url, warera_profile_snapshot, otp_expires_at, approval_message_id,
+                           target_embassy_id
+                    from embassy_requests
+                    where request_status in ('created', 'verifying', 'pending_approval')
+                      and request_thread_id is not null
+                    order by created_at asc
+                    """
+                )
+                rows = await cursor.fetchall()
+        except Exception:
+            logger.exception("Could not restore pending workflow views; continuing startup")
+            return
+
         guild = self.get_guild(settings.discord_guild_id)
         if guild is None:
             return
         registered = 0
         for row in rows:
-            thread = guild.get_thread(int(row["request_thread_id"]))
-            if thread is None:
-                continue
-            applicant = guild.get_member(int(row["applicant_discord_id"]))
-            if applicant is None:
-                continue
-            stage = row.get("flow_stage")
-            request_id = str(row["id"])
-            if stage == "profile_pending":
-                self.add_view(EmbassyStartView(self.database, request_id, thread))
-                registered += 1
-            elif stage == "company_verification" and row.get("warera_user_id"):
-                profile_url = str(row.get("profile_url") or "https://app.warera.io/user/" + str(row["warera_user_id"]))
-                self.add_view(CompanyView(self.database, request_id, applicant.id, str(row["warera_user_id"]), None, profile_url.rstrip("/") + "/companies"))
-                registered += 1
-            elif stage == "embassy_selection":
-                profile = row.get("warera_profile_snapshot") or {}
-                self.add_view(EmbassySelectionView(self.database, request_id, applicant, profile))
-                registered += 1
-            if stage in {"awaiting_embassy_approval", "awaiting_government_approval"} and row.get("approval_message_id") and row.get("target_embassy_id"):
-                self.add_view(PersistentApprovalView(self.database, request_id, applicant.id, own_country=stage == "awaiting_embassy_approval"))
-                registered += 1
+            try:
+                thread = guild.get_thread(int(row["request_thread_id"]))
+                if thread is None:
+                    continue
+                applicant = guild.get_member(int(row["applicant_discord_id"]))
+                if applicant is None:
+                    continue
+                stage = row.get("flow_stage")
+                request_id = str(row["id"])
+                if stage == "profile_pending":
+                    self.add_view(EmbassyStartView(self.database, request_id, thread))
+                    registered += 1
+                elif stage == "company_verification" and row.get("warera_user_id"):
+                    profile_url = str(row.get("profile_url") or "https://app.warera.io/user/" + str(row["warera_user_id"]))
+                    self.add_view(CompanyView(self.database, request_id, applicant.id, str(row["warera_user_id"]), None, profile_url.rstrip("/") + "/companies"))
+                    registered += 1
+                elif stage == "embassy_selection":
+                    profile = row.get("warera_profile_snapshot") or {}
+                    self.add_view(EmbassySelectionView(self.database, request_id, applicant, profile))
+                    registered += 1
+                if stage in {"awaiting_embassy_approval", "awaiting_government_approval"} and row.get("approval_message_id") and row.get("target_embassy_id"):
+                    self.add_view(PersistentApprovalView(self.database, request_id, applicant.id, own_country=stage == "awaiting_embassy_approval"))
+                    registered += 1
+            except (ValueError, TypeError, KeyError, discord.HTTPException):
+                logger.exception("Could not restore workflow view for request %s", row.get("id"))
+        self._pending_views_registered = True
         if registered:
             logger.info("Registered %s persistent workflow views", registered)
 
     async def setup_hook(self) -> None:
+        # Database availability should not turn a transient network blip into a
+        # permanent Render crash. The outer runner retries the whole bot start,
+        # while this method remains strict once a connection is established.
         await self.database.connect()
         self.add_view(FixedVerificationDashboardView(self.database))
         self.add_view(FixedGovernmentDashboardView(self.database))
@@ -142,7 +160,15 @@ class RajdootBot(discord.Client):
             return
         logger.info("Logged in as %s", self.user)
         logger.info("Connected to guild: %s (%s)", guild.name, guild.id)
-        await self._ensure_dashboards(guild)
+        if guild.id in self._dashboard_ready_guilds:
+            return
+        try:
+            await self._ensure_dashboards(guild)
+            self._dashboard_ready_guilds.add(guild.id)
+        except Exception:
+            # Dashboard repair must never take down the Discord process. It will
+            # be retried on the next reconnect/readiness cycle.
+            logger.exception("Dashboard reconciliation failed; bot will remain online")
 
     async def _show_fixed_dashboard(self, interaction: discord.Interaction, kind: str) -> None:
         guild = interaction.guild
@@ -152,16 +178,24 @@ class RajdootBot(discord.Client):
         await self._ensure_dashboards(guild)
         config = await self.database.fetch_discord_configuration(guild.id) or {}
         if kind == "verification":
-            channel_id = settings.verification_dashboard_channel_id or config.get("verification_dashboard_channel_id"); message_id = settings.verification_dashboard_message_id or config.get("verification_dashboard_message_id"); label = "Verification & Access Request"
+            channel_id = settings.verification_dashboard_channel_id or config.get("verification_dashboard_channel_id")
+            message_id = settings.verification_dashboard_message_id or config.get("verification_dashboard_message_id")
+            label = "Verification & Access Request"
         elif kind == "government":
-            channel_id = settings.government_dashboard_channel_id or config.get("government_dashboard_channel_id"); message_id = settings.government_dashboard_message_id or config.get("government_dashboard_message_id"); label = "Government Control Center"
+            channel_id = settings.government_dashboard_channel_id or config.get("government_dashboard_channel_id")
+            message_id = settings.government_dashboard_message_id or config.get("government_dashboard_message_id")
+            label = "Government Control Center"
         else:
-            channel_id = settings.diplomat_dashboard_channel_id or config.get("diplomat_dashboard_channel_id"); message_id = settings.diplomat_dashboard_message_id or config.get("diplomat_dashboard_message_id"); label = "Diplomatic Center"
+            channel_id = settings.diplomat_dashboard_channel_id or config.get("diplomat_dashboard_channel_id")
+            message_id = settings.diplomat_dashboard_message_id or config.get("diplomat_dashboard_message_id")
+            label = "Diplomatic Center"
         if not channel_id or not message_id:
-            await interaction.response.send_message(f"⚠️ The fixed {label} could not be located.", ephemeral=True); return
+            await interaction.response.send_message(f"⚠️ The fixed {label} could not be located.", ephemeral=True)
+            return
         channel = guild.get_channel(int(channel_id))
         if not isinstance(channel, discord.TextChannel):
-            await interaction.response.send_message("⚠️ The configured dashboard channel is no longer a text channel.", ephemeral=True); return
+            await interaction.response.send_message("⚠️ The configured dashboard channel is no longer a text channel.", ephemeral=True)
+            return
         try:
             message = await channel.fetch_message(int(message_id))
         except (discord.NotFound, discord.HTTPException):
@@ -169,12 +203,14 @@ class RajdootBot(discord.Client):
             config = await self.database.fetch_discord_configuration(guild.id) or {}
             message_id = ((settings.verification_dashboard_message_id or config.get("verification_dashboard_message_id")) if kind == "verification" else (settings.government_dashboard_message_id or config.get("government_dashboard_message_id")) if kind == "government" else (settings.diplomat_dashboard_message_id or config.get("diplomat_dashboard_message_id")))
             if not message_id:
-                await interaction.response.send_message("⚠️ RAJDOOT could not restore the fixed dashboard.", ephemeral=True); return
+                await interaction.response.send_message("⚠️ RAJDOOT could not restore the fixed dashboard.", ephemeral=True)
+                return
             message = await channel.fetch_message(int(message_id))
         await interaction.response.send_message(f"📌 **{label}** is fixed and persistent: [Open dashboard]({message.jump_url})", ephemeral=True)
 
     async def _pin_dashboard(self, message: discord.Message, label: str) -> None:
-        if message.pinned: return
+        if message.pinned:
+            return
         try:
             await message.pin(reason=f"RAJDOOT fixed {label} dashboard")
         except (discord.Forbidden, discord.HTTPException) as exc:
@@ -197,17 +233,20 @@ class RajdootBot(discord.Client):
                 if isinstance(channel, discord.TextChannel):
                     from rajdoot.verification_dashboard import ensure_verification_dashboard
                     message = await ensure_verification_dashboard(channel, self.database, int(verification_message_id) if verification_message_id else None)
-                    verification_message_id = message.id; await self._pin_dashboard(message, "Verification & Access Request")
+                    verification_message_id = message.id
+                    await self._pin_dashboard(message, "Verification & Access Request")
             if government_channel_id:
                 channel = guild.get_channel(int(government_channel_id))
                 if isinstance(channel, discord.TextChannel):
                     message = await ensure_dashboard_message(channel=channel, message_id=int(government_message_id) if government_message_id else None, embed=discord.Embed(title="🏛️ RAJDOOT Government Control Center", description="Fixed Government Control Center. Use **/government-dashboard** to return here.", colour=discord.Colour.blurple()), view=FixedGovernmentDashboardView(self.database))
-                    government_message_id = message.id; await self._pin_dashboard(message, "Government Control Center")
+                    government_message_id = message.id
+                    await self._pin_dashboard(message, "Government Control Center")
             if diplomat_channel_id:
                 channel = guild.get_channel(int(diplomat_channel_id))
                 if isinstance(channel, discord.TextChannel):
                     message = await ensure_dashboard_message(channel=channel, message_id=int(diplomat_message_id) if diplomat_message_id else None, embed=discord.Embed(title="🌍 RAJDOOT Diplomatic Center", description="Fixed Diplomatic Center. Use **/diplomat-dashboard** to return here.", colour=discord.Colour.blurple()), view=FixedDiplomatDashboardView(self.database))
-                    diplomat_message_id = message.id; await self._pin_dashboard(message, "Diplomatic Center")
+                    diplomat_message_id = message.id
+                    await self._pin_dashboard(message, "Diplomatic Center")
 
             await self.database.upsert_discord_configuration(guild_id=guild.id, request_category_id=int(request_category_id) if request_category_id else None, logs_channel_id=int(logs_channel_id) if logs_channel_id else None, government_dashboard_channel_id=int(government_channel_id) if government_channel_id else None, government_dashboard_message_id=int(government_message_id) if government_message_id else None, diplomat_dashboard_channel_id=int(diplomat_channel_id) if diplomat_channel_id else None, diplomat_dashboard_message_id=int(diplomat_message_id) if diplomat_message_id else None, verification_dashboard_channel_id=int(verification_channel_id) if verification_channel_id else None, verification_dashboard_message_id=int(verification_message_id) if verification_message_id else None)
 
@@ -216,8 +255,25 @@ async def _run() -> None:
     database = Database(settings.database_url)
     health_server = start_health_server()
     bot = RajdootBot(database)
+    delay = 2
     try:
-        await bot.start(settings.discord_token)
+        while True:
+            try:
+                await bot.start(settings.discord_token)
+                break
+            except asyncio.CancelledError:
+                raise
+            except (discord.LoginFailure, discord.PrivilegedIntentsRequired):
+                logger.exception("Discord configuration is invalid; stopping instead of retrying forever")
+                raise
+            except Exception:
+                logger.exception("RAJDOOT stopped unexpectedly; retrying in %ss", delay)
+                try:
+                    await database.close()
+                except Exception:
+                    logger.exception("Could not close database after bot failure")
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, 60)
     finally:
         health_server.shutdown()
         await database.close()
