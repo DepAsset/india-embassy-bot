@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 from dataclasses import dataclass
 from typing import Any
 
 import httpx
 
 from rajdoot.config import Settings
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,7 +104,7 @@ class WarEraClient:
                         profile["country"] = {"id": resolved_id, "name": str(country["name"])}
                         profile["countryName"] = str(country["name"])
                 except httpx.HTTPError:
-                    pass
+                    logger.warning("WarEra country enrichment failed for %s", country_id)
 
         return WarEraProfile(str(user_id), profile)
 
@@ -180,7 +183,13 @@ class WarEraClient:
                 if not company_id:
                     return None
                 async with semaphore:
-                    details = await self._get_company_by_id(client, str(company_id))
+                    try:
+                        details = await self._get_company_by_id(client, str(company_id))
+                    except (httpx.HTTPError, ValueError) as exc:
+                        # One malformed/unavailable company must never prevent
+                        # verification against the other companies the player owns.
+                        logger.warning("Skipping WarEra company %s during verification: %s", company_id, exc)
+                        return None
                 if not details:
                     return None
                 merged = dict(details)
