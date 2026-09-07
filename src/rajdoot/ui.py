@@ -53,29 +53,40 @@ async def embassy_directory_embed(database: Database) -> discord.Embed:
 
 
 async def ensure_dashboard_message(*, channel: discord.TextChannel, message_id: int | None, embed: discord.Embed, view: discord.ui.View) -> discord.Message:
-    """Return the single canonical dashboard message and remove RAJDOOT duplicates."""
+    """Return the single canonical dashboard message with bounded duplicate cleanup.
+
+    Startup must not walk an entire Discord channel. If the configured canonical
+    message still exists, only a bounded recent history window is inspected for
+    stale copies. If it is missing, a larger bounded scan is used to recover an
+    older copy before creating a new message.
+    """
     title = embed.title
     selected: discord.Message | None = None
-    matches: list[discord.Message] = []
 
     if message_id:
         try:
-            selected = await channel.fetch_message(message_id)
+            candidate = await channel.fetch_message(message_id)
+            if _is_matching_dashboard(candidate, title):
+                selected = candidate
         except (discord.NotFound, discord.HTTPException):
             selected = None
 
-    # Dashboard channels are intentionally small. Scan enough history to find
-    # older dashboard copies left by previous deployments, not just the latest
-    # 100 messages. Pagination is handled by discord.py when limit is None.
+    matches: list[discord.Message] = []
+    scan_limit = 500 if selected is None else 100
     try:
-        async for message in channel.history(limit=None, oldest_first=True):
+        async for message in channel.history(limit=scan_limit, oldest_first=False):
             if _is_matching_dashboard(message, title):
                 matches.append(message)
     except (discord.Forbidden, discord.HTTPException):
         pass
 
-    if selected is None or not _is_matching_dashboard(selected, title):
-        selected = next((m for m in matches if m.id == message_id), None) or (matches[0] if matches else None)
+    if selected is None:
+        # Prefer the configured message if it appeared in the bounded scan,
+        # otherwise keep the oldest surviving copy so message identity remains
+        # stable when possible.
+        selected = next((m for m in matches if message_id and m.id == message_id), None)
+        if selected is None and matches:
+            selected = min(matches, key=lambda m: m.id)
 
     if selected is not None:
         await selected.edit(embed=embed, view=view)
