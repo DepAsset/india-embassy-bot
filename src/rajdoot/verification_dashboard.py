@@ -13,6 +13,19 @@ from rajdoot.workflow_store import WorkflowStore
 logger = logging.getLogger(__name__)
 
 
+async def _request_thread(guild: discord.Guild, thread_id: int | str | None) -> discord.Thread | None:
+    if not thread_id:
+        return None
+    try:
+        thread = guild.get_thread(int(thread_id))
+        if thread is not None:
+            return thread
+        fetched = await guild.fetch_channel(int(thread_id))
+        return fetched if isinstance(fetched, discord.Thread) else None
+    except (discord.NotFound, discord.Forbidden, discord.HTTPException, ValueError, TypeError):
+        return None
+
+
 class FixedVerificationDashboardView(discord.ui.View):
     def __init__(self, database: Database) -> None:
         super().__init__(timeout=None)
@@ -27,12 +40,11 @@ class FixedVerificationDashboardView(discord.ui.View):
         existing = await store.fetch_open_for_applicant(interaction.user.id)
         latest = await store.fetch_latest_for_applicant(interaction.user.id)
 
-        # A request cannot be replaced merely because its database status is
-        # terminal. The Discord thread is the user-visible lifecycle boundary.
-        # Archived/locked means it is safe to start again; an open thread blocks
-        # every new request regardless of the previous request's status.
+        # The Discord thread is the user-visible lifecycle boundary. Archived or
+        # locked means it is closed; an open thread blocks every new request,
+        # regardless of the database request status.
         if existing:
-            thread = interaction.guild.get_thread(int(existing["request_thread_id"])) if existing.get("request_thread_id") else None
+            thread = await _request_thread(interaction.guild, existing.get("request_thread_id"))
             if thread is not None and (thread.archived or thread.locked):
                 await store.cancel_request(str(existing["id"]), reason="Request thread was closed before completion")
             else:
@@ -40,9 +52,15 @@ class FixedVerificationDashboardView(discord.ui.View):
                 await interaction.response.send_message(f"⏳ You already have an active access request.{suffix}", ephemeral=True)
                 return
         if latest and latest.get("request_thread_id"):
-            thread = interaction.guild.get_thread(int(latest["request_thread_id"]))
+            thread = await _request_thread(interaction.guild, latest.get("request_thread_id"))
             if thread is not None and not thread.archived and not thread.locked:
                 await interaction.response.send_message(f"⏳ Your previous request thread is still open: {thread.mention}. Close that request before starting another one.", ephemeral=True)
+                return
+            if thread is None:
+                # We cannot prove that a private thread is closed if Discord does
+                # not let the bot resolve it. Fail closed rather than allowing a
+                # second request that could violate the one-thread rule.
+                await interaction.response.send_message("🔐 Your previous request thread could not be verified as closed. Please close that thread or ask EAM/Admin to reconcile it before starting another request.", ephemeral=True)
                 return
 
         parent = interaction.guild.get_channel(settings.request_channel_id or 0)
@@ -86,7 +104,7 @@ class FixedVerificationDashboardView(discord.ui.View):
         embed.add_field(name="Stage", value=str(request.get("flow_stage", "unknown")).replace("_", " ").title(), inline=True)
         embed.add_field(name="Verification", value=str(request.get("verification_status", "pending")).title(), inline=True)
         embed.add_field(name="Company Checks", value=f"{request.get('verification_attempts', 0)}/5", inline=True)
-        thread = interaction.guild.get_thread(int(request["request_thread_id"])) if interaction.guild and request.get("request_thread_id") else None
+        thread = await _request_thread(interaction.guild, request.get("request_thread_id")) if interaction.guild else None
         if thread:
             embed.add_field(name="Private Request", value=thread.mention, inline=False)
         await interaction.response.send_message(embed=embed, ephemeral=True)
