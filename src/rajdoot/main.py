@@ -219,7 +219,7 @@ class RajdootBot(discord.Client):
             message_id = settings.diplomat_dashboard_message_id or config.get("diplomat_dashboard_message_id")
             label = "Diplomatic Center"
         if not channel_id or not message_id:
-            await interaction.response.send_message(f"⚠️ The fixed {label} could not be located.", ephemeral=True)
+            await interaction.followup.send(f"⚠️ The fixed {label} could not be located.", ephemeral=True)
             return
         channel = guild.get_channel(int(channel_id))
         if not isinstance(channel, discord.TextChannel):
