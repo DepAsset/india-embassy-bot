@@ -201,6 +201,9 @@ class RajdootBot(discord.Client):
         if guild is None:
             await interaction.response.send_message("🌿 This command must be used inside the embassy server.", ephemeral=True)
             return
+        # Dashboard reconciliation can involve several Discord/DB operations.
+        # A slash command must acknowledge within Discord's ~3s window first.
+        await interaction.response.defer(ephemeral=True)
         await self._ensure_dashboards(guild)
         config = await self.database.fetch_discord_configuration(guild.id) or {}
         if kind == "verification":
@@ -220,7 +223,7 @@ class RajdootBot(discord.Client):
             return
         channel = guild.get_channel(int(channel_id))
         if not isinstance(channel, discord.TextChannel):
-            await interaction.response.send_message("⚠️ The configured dashboard channel is no longer a text channel.", ephemeral=True)
+            await interaction.followup.send("⚠️ The configured dashboard channel is no longer a text channel.", ephemeral=True)
             return
         try:
             message = await channel.fetch_message(int(message_id))
@@ -229,10 +232,10 @@ class RajdootBot(discord.Client):
             config = await self.database.fetch_discord_configuration(guild.id) or {}
             message_id = ((settings.verification_dashboard_message_id or config.get("verification_dashboard_message_id")) if kind == "verification" else (settings.government_dashboard_message_id or config.get("government_dashboard_message_id")) if kind == "government" else (settings.diplomat_dashboard_message_id or config.get("diplomat_dashboard_message_id")))
             if not message_id:
-                await interaction.response.send_message("⚠️ RAJDOOT could not restore the fixed dashboard.", ephemeral=True)
+                await interaction.followup.send("⚠️ RAJDOOT could not restore the fixed dashboard.", ephemeral=True)
                 return
             message = await channel.fetch_message(int(message_id))
-        await interaction.response.send_message(f"📌 **{label}** is fixed and persistent: [Open dashboard]({message.jump_url})", ephemeral=True)
+        await interaction.followup.send(f"📌 **{label}** is fixed and persistent: [Open dashboard]({message.jump_url})", ephemeral=True)
 
     async def _pin_dashboard(self, message: discord.Message, label: str) -> None:
         if message.pinned:
