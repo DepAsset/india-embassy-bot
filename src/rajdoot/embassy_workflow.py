@@ -252,7 +252,7 @@ class EmbassySelectionView(discord.ui.View):
     async def own(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True)
         embassies = await self.database.fetch_active_embassies()
-        country_id, country_name = await resolve_profile_country(dict(self.profile))
+        _, country_id, country_name = await resolve_profile_country(dict(self.profile))
         own = next((e for e in embassies if str(e.get("country_id") or "").casefold() == str(country_id or "").casefold()), None)
         if own is None and country_name:
             own = next((e for e in embassies if str(e.get("country_name") or "").casefold() == country_name.casefold()), None)
