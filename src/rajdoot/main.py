@@ -61,6 +61,7 @@ class RajdootBot(discord.Client):
         self._dashboard_lock = asyncio.Lock()
         self._dashboard_ready_guilds: set[int] = set()
         self._pending_views_registered = False
+        self._commands_synced = False
 
     async def _register_pending_workflow_views(self) -> None:
         if self._pending_views_registered:
@@ -121,15 +122,14 @@ class RajdootBot(discord.Client):
             logger.info("Registered %s persistent workflow views", registered)
 
     async def setup_hook(self) -> None:
-        # Database availability should not turn a transient network blip into a
-        # permanent Render crash. The outer runner retries the whole bot start,
-        # while this method remains strict once a connection is established.
-        await self.database.connect()
+        # setup_hook runs BEFORE the Discord gateway reaches READY. Do not perform
+        # database queries, channel scans, or Discord API synchronization here:
+        # if any of those stall, the bot never reaches Discord and appears OFFLINE
+        # even though the Render health server is still reporting the process live.
         self.add_view(FixedVerificationDashboardView(self.database))
         self.add_view(FixedGovernmentDashboardView(self.database))
         self.add_view(FixedDiplomatDashboardView(self.database))
         self.add_view(GovernmentEmbassyView(self.database))
-        await self._register_pending_workflow_views()
 
         guild = discord.Object(id=settings.discord_guild_id)
 
@@ -150,20 +150,46 @@ class RajdootBot(discord.Client):
         government_command.default_permissions = discord.Permissions(manage_guild=True)
         self.tree.add_command(government_command, guild=guild)
         self.tree.add_command(app_commands.Command(name="diplomat-dashboard", description="Open the fixed RAJDOOT Diplomatic Center.", callback=show_diplomat_dashboard), guild=guild)
-        await self.tree.sync(guild=guild)
-        logger.info("Guild dashboard commands synchronized: verification, government, diplomat")
+        # Command synchronization is deliberately deferred until on_ready().
+        # Discord must be fully connected before a network/API operation is allowed
+        # to block startup.
 
     async def on_ready(self) -> None:
         guild = self.get_guild(settings.discord_guild_id)
         if guild is None:
             logger.error("Configured Discord guild was not found")
             return
+
+        # READY means Discord has accepted the gateway connection. From this point
+        # onward, slow DB/API/dashboard work cannot prevent the bot from appearing
+        # online. This is the critical startup ordering for Render free instances.
         logger.info("Logged in as %s", self.user)
         logger.info("Connected to guild: %s (%s)", guild.name, guild.id)
+
+        if not self._commands_synced:
+            try:
+                await asyncio.wait_for(self.tree.sync(guild=discord.Object(id=guild.id)), timeout=20)
+                self._commands_synced = True
+                logger.info("Guild dashboard commands synchronized: verification, government, diplomat")
+            except Exception:
+                logger.exception("Guild command synchronization failed; bot remains online and will retry")
+
         if guild.id in self._dashboard_ready_guilds:
             return
+
         try:
-            await self._ensure_dashboards(guild)
+            await asyncio.wait_for(self.database.connect(), timeout=15)
+        except Exception:
+            logger.exception("Database connection failed after Discord READY; bot remains online")
+            return
+
+        try:
+            await asyncio.wait_for(self._register_pending_workflow_views(), timeout=20)
+        except Exception:
+            logger.exception("Pending workflow view restoration failed; bot remains online")
+
+        try:
+            await asyncio.wait_for(self._ensure_dashboards(guild), timeout=45)
             self._dashboard_ready_guilds.add(guild.id)
         except Exception:
             # Dashboard repair must never take down the Discord process. It will
